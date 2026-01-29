@@ -36,7 +36,8 @@ You represent and warrant that:
     be relicensed as described above.
 
 If you do not agree to these terms, do not submit Contributions to this
-repository.
+repository. You are free to fork it and start a new repository under the
+terms of the GNU AFFERO GENERAL PUBLIC LICENSE Version 3.
 
 Submitting a Contribution constitutes your acceptance of these terms and
 forms a binding agreement between you and the Licensor.
