@@ -1,0 +1,260 @@
+@page
+@model ModelFarm.Web.Pages.ConfigurationsModel
+@{
+    ViewData["Title"] = "Configurations";
+}
+
+<h4 class="mb-3">Training Configurations</h4>
+
+<div class="row">
+    <div class="col-md-5">
+        <div class="card">
+            <div class="card-header">New Configuration</div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label" data-bs-toggle="tooltip" title="Select the type of training configuration. Different types are designed for different ML tasks and require compatible datasets.">Configuration Type</label>
+                    <select class="form-select form-select-sm" id="configType">
+                        <option value="">Select type...</option>
+                        @foreach (var item in Model.AvailableConfigurationTypes)
+                        {
+                            <option value="@item.Value">@item.Text</option>
+                        }
+                    </select>
+                </div>
+                
+                <!-- Quant Strategy Form -->
+                <form id="configForm" class="config-type-form" data-type="QuantStrategy" style="display: none;">
+                    <div class="row">
+                        <div class="col-12 mb-2">
+                            <label class="form-label" data-bs-toggle="tooltip" title="A descriptive name for this training configuration (e.g., 'BTC MLP Aggressive' or 'Conservative Linear').">Name</label>
+                            <input type="text" class="form-control form-control-sm" id="configName" required>
+                        </div>
+                        <div class="col-12 mb-2">
+                            <label class="form-label" data-bs-toggle="tooltip" title="The dataset to use for training. Only Exchange History datasets with 'Ready' status are available for Quant Strategy configurations.">Dataset</label>
+                            <select class="form-select form-select-sm" id="configDataset" required></select>
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label" data-bs-toggle="tooltip" title="The neural network architecture to use. Linear Regression is simplest and fastest. MLP (Multi-Layer Perceptron) can capture non-linear patterns. Gradient Boosting approximation uses a deeper network for complex relationships.">Model Type</label>
+                            <select class="form-select form-select-sm" id="configModelType" asp-items="Model.AvailableModelTypes"></select>
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label" data-bs-toggle="tooltip" title="Number of previous time periods to use as input features. Higher values capture longer-term patterns but increase model complexity. Typical values: 4-10 for hourly data, 5-20 for daily data.">Max Lags</label>
+                            <input type="number" class="form-control form-control-sm" id="configMaxLags" value="4">
+                        </div>
+                    </div>
+
+                    <hr class="my-2">
+                    <small class="text-muted">Training Parameters</small>
+                    <div class="row">
+                        <div class="col-4 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Controls how fast the model learns. Lower values (0.0001) learn slowly but more precisely. Higher values (0.01) learn faster but may overshoot optimal weights. Default 0.001 works well for most cases.">Learning Rate</label>
+                            <input type="number" class="form-control form-control-sm" id="configLR" value="0.001" step="0.0001">
+                        </div>
+                        <div class="col-4 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Number of samples processed before updating model weights. Larger batches (64, 128) provide more stable gradients but use more memory. Smaller batches (16, 32) add noise that can help escape local minima.">Batch Size</label>
+                            <input type="number" class="form-control form-control-sm" id="configBatch" value="32">
+                        </div>
+                        <div class="col-4 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Maximum number of complete passes through the training data. Training may stop earlier if early stopping is enabled. More epochs allow better convergence but increase training time.">Max Epochs</label>
+                            <input type="number" class="form-control form-control-sm" id="configEpochs" value="10000">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-4 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Number of epochs without validation loss improvement before stopping training early. Higher values allow more exploration but may waste time. Lower values stop faster but might miss better solutions.">Early Stop Patience</label>
+                            <input type="number" class="form-control form-control-sm" id="configEarlyStopPatience" value="50">
+                        </div>
+                        <div class="col-4 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Fraction of training data used for validation during training (0.0-1.0). Used to monitor overfitting and for early stopping. 0.2 means 20% of data is used for validation.">Validation Split</label>
+                            <input type="number" class="form-control form-control-sm" id="configValSplit" value="0.2" step="0.05">
+                        </div>
+                        <div class="col-4 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Fraction of data held out for final testing (0.0-1.0). Used for unbiased evaluation after training completes. 0.1 means 10% of data is used for testing.">Test Split</label>
+                            <input type="number" class="form-control form-control-sm" id="configTestSplit" value="0.1" step="0.05">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-4 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Random seed for reproducibility. Using the same seed ensures identical results across runs. Change to get different random initializations.">Random Seed</label>
+                            <input type="number" class="form-control form-control-sm" id="configSeed" value="42">
+                        </div>
+                        <div class="col-4 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Dropout rate for regularization (0.0-1.0). Randomly disables neurons during training to prevent overfitting. 0.2 means 20% of neurons are dropped.">Dropout Rate</label>
+                            <input type="number" class="form-control form-control-sm" id="configDropout" value="0.2" step="0.05">
+                        </div>
+                    </div>
+
+                    <hr class="my-2">
+                    <small class="text-muted">Performance Requirements</small>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Minimum acceptable Sharpe ratio. Measures risk-adjusted returns (return per unit of volatility). Values above 1.0 are good, above 2.0 are excellent. Used to determine if training meets requirements.">Min Sharpe</label>
+                            <input type="number" class="form-control form-control-sm" id="configSharpe" value="1.0" step="0.1">
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Maximum acceptable drawdown (as decimal, e.g., 0.25 = 25%). Drawdown is the peak-to-trough decline during backtesting. Lower values are more conservative. 0.25-0.30 is typical for aggressive strategies.">Max Drawdown</label>
+                            <input type="number" class="form-control form-control-sm" id="configDrawdown" value="0.25" step="0.01">
+                        </div>
+                    </div>
+
+                    <hr class="my-2">
+                    <small class="text-muted">Trading Environment</small>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Starting portfolio value in quote currency (e.g., USDT) for backtesting. This affects absolute P&L numbers but not percentage returns or ratios.">Initial Capital</label>
+                            <input type="number" class="form-control form-control-sm" id="configCapital" value="10000">
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Expected price slippage per trade (as decimal). Accounts for the difference between expected and actual execution price due to market movement during order execution. 0.0005 = 0.05%.">Slippage</label>
+                            <input type="number" class="form-control form-control-sm" id="configSlippage" value="0.0005" step="0.0001">
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Fee rate for maker orders (limit orders that add liquidity). Usually lower than taker fees. 0.001 = 0.1%. Check your exchange's fee schedule for accurate values.">Maker Fee</label>
+                            <input type="number" class="form-control form-control-sm" id="configMakerFee" value="0.001" step="0.0001">
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Fee rate for taker orders (market orders that remove liquidity). Usually higher than maker fees. 0.001 = 0.1%. The backtester uses taker fees by default for realistic simulation.">Taker Fee</label>
+                            <input type="number" class="form-control form-control-sm" id="configTakerFee" value="0.001" step="0.0001">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-sm w-100 mt-2">Create Configuration</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between">
+                <span>Configurations</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadConfigs()">Refresh</button>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Model</th>
+                            <th>Min Sharpe</th>
+                            <th>Max DD</th>
+                            <th>Capital</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="configsBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    const csrfToken = '@Html.AntiForgeryToken()'.match(/value="([^"]+)"/)?.[1] || '';
+
+    // Initialize Bootstrap tooltips
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+        new bootstrap.Tooltip(el);
+    });
+
+    // Helper for POST requests with anti-forgery token
+    async function postWithToken(url, body) {
+        if (body instanceof FormData) {
+            body.append('__RequestVerificationToken', csrfToken);
+        }
+        return fetch(url, { method: 'POST', body });
+    }
+
+    // ==================== Configurations ====================
+    document.getElementById('configType').addEventListener('change', function() {
+        const selectedType = this.value;
+        document.querySelectorAll('.config-type-form').forEach(form => {
+            form.style.display = (selectedType && form.dataset.type === selectedType) ? 'block' : 'none';
+        });
+        if (selectedType) {
+            loadDatasets();
+        }
+    });
+
+    document.getElementById('configForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = new FormData();
+        form.append('ConfigurationType', document.getElementById('configType').value);
+        form.append('ConfigName', document.getElementById('configName').value);
+        form.append('SelectedDatasetId', document.getElementById('configDataset').value);
+        form.append('SelectedModelType', document.getElementById('configModelType').value);
+        form.append('MaxLags', document.getElementById('configMaxLags').value);
+        form.append('LearningRate', document.getElementById('configLR').value);
+        form.append('BatchSize', document.getElementById('configBatch').value);
+        form.append('MaxEpochs', document.getElementById('configEpochs').value);
+        form.append('EarlyStoppingPatience', document.getElementById('configEarlyStopPatience').value);
+        form.append('ValidationSplit', document.getElementById('configValSplit').value);
+        form.append('TestSplit', document.getElementById('configTestSplit').value);
+        form.append('RandomSeed', document.getElementById('configSeed').value);
+        form.append('DropoutRate', document.getElementById('configDropout').value);
+        form.append('MinSharpeRatio', document.getElementById('configSharpe').value);
+        form.append('MaxDrawdown', document.getElementById('configDrawdown').value);
+        form.append('InitialCapital', document.getElementById('configCapital').value);
+        form.append('MakerFee', document.getElementById('configMakerFee').value);
+        form.append('TakerFee', document.getElementById('configTakerFee').value);
+        form.append('Slippage', document.getElementById('configSlippage').value);
+
+        const res = await postWithToken('?handler=CreateConfig', form);
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById('configName').value = '';
+            loadConfigs();
+        } else {
+            alert(data.error);
+        }
+    });
+
+    async function loadDatasets() {
+        const res = await fetch('?handler=Datasets');
+        const datasets = await res.json();
+        
+        const configType = document.getElementById('configType')?.value;
+        const configDs = document.getElementById('configDataset');
+        const compatibleDatasets = datasets.filter(d => {
+            if (d.status !== 2) return false;
+            if (configType === 'QuantStrategy') return d.type === 0;
+            return true;
+        });
+        configDs.innerHTML = compatibleDatasets.length > 0
+            ? compatibleDatasets.map(d => `<option value="${d.id}">${d.name} (${d.symbol})</option>`).join('')
+            : '<option value="">No compatible datasets available</option>';
+    }
+
+    async function loadConfigs() {
+        const res = await fetch('?handler=Configs');
+        const configs = await res.json();
+        const tbody = document.getElementById('configsBody');
+        tbody.innerHTML = configs.map(c => {
+            const typeLabel = c.type === 0 ? 'Quant Strategy' : c.type;
+            return `
+            <tr>
+                <td>${c.name}</td>
+                <td><span class="badge bg-info">${typeLabel}</span></td>
+                <td>${c.modelType}</td>
+                <td>${c.performanceRequirements?.minSharpeRatio ?? '-'}</td>
+                <td>${c.performanceRequirements?.maxDrawdown ? (c.performanceRequirements.maxDrawdown * 100).toFixed(0) + '%' : '-'}</td>
+                <td>$${c.tradingEnvironment?.initialCapital?.toLocaleString() ?? '-'}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteConfig('${c.id}')" title="Delete">&times;</button>
+                </td>
+            </tr>
+        `}).join('');
+    }
+
+    async function deleteConfig(configId) {
+        const form = new FormData();
+        await postWithToken(`?handler=DeleteConfig&configId=${configId}`, form);
+        loadConfigs();
+    }
+
+    // ==================== Init ====================
+    loadConfigs();
+    setInterval(loadConfigs, 10000);
+</script>
+}

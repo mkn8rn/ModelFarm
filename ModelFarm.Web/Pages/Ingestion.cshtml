@@ -1,0 +1,361 @@
+@page
+@model ModelFarm.Web.Pages.IngestionModel
+@{
+    ViewData["Title"] = "Ingestion";
+}
+
+<h4 class="mb-3">Data Ingestion</h4>
+
+<div class="row">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">Configuration</div>
+            <div class="card-body">
+                <form method="post" asp-page-handler="StartIngestion" id="ingestionForm">
+                    <div class="mb-2">
+                        <label asp-for="Exchange" class="form-label">Exchange</label>
+                        <select asp-for="Exchange" class="form-select form-select-sm" id="exchangeSelect" asp-items="Model.AvailableExchanges"></select>
+                    </div>
+                    <div class="mb-2">
+                        <label asp-for="Symbol" class="form-label">Symbol</label>
+                        <select asp-for="Symbol" class="form-select form-select-sm" id="symbolSelect">
+                            <option value="">Loading...</option>
+                        </select>
+                        <input type="text" id="symbolFilter" class="form-control form-control-sm mt-1" placeholder="Filter symbols...">
+                    </div>
+                    <div class="mb-2">
+                        <label asp-for="Interval" class="form-label">Interval</label>
+                        <select asp-for="Interval" class="form-select form-select-sm" asp-items="Model.AvailableIntervals"></select>
+                    </div>
+                    <div class="mb-2">
+                        <label asp-for="StartDate" class="form-label">Start</label>
+                        <input asp-for="StartDate" type="date" class="form-control form-control-sm" />
+                    </div>
+                    <div class="mb-2">
+                        <label asp-for="EndDate" class="form-label">End</label>
+                        <input asp-for="EndDate" type="date" class="form-control form-control-sm" />
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm w-100" id="startBtn">Start</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm w-100 mt-2" id="cancelBtn" style="display:none;">Cancel</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-8">
+        <div class="card mb-3" id="progressCard" style="display:none;">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Progress</span>
+                <span class="badge bg-primary" id="statusBadge">Queued</span>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between small mb-1">
+                    <span id="progressMessage">Starting...</span>
+                    <span id="progressPercent">0%</span>
+                </div>
+                <div class="progress" style="height: 24px;">
+                    <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%">
+                        <span id="progressBarText" class="small"></span>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between mt-2">
+                    <span class="text-muted small">
+                        <i class="bi bi-file-earmark-text"></i> 
+                        <span id="recordCount">0</span> / <span id="recordTotal">?</span> records
+                    </span>
+                    <span class="text-muted small" id="elapsedTime"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" id="resultsCard" style="display:none;">
+            <div class="card-header">Results</div>
+            <div class="card-body">
+                <div class="row text-center mb-3">
+                    <div class="col-3">
+                        <div class="fs-5 fw-bold" id="statTotalRecords">-</div>
+                        <div class="text-muted small">Records</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="fs-5 fw-bold text-success" id="statHighPrice">-</div>
+                        <div class="text-muted small">High</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="fs-5 fw-bold text-danger" id="statLowPrice">-</div>
+                        <div class="text-muted small">Low</div>
+                    </div>
+                    <div class="col-3">
+                        <div class="fs-5 fw-bold" id="statDuration">-</div>
+                        <div class="text-muted small">Time</div>
+                    </div>
+                </div>
+                <div class="small text-muted mb-3">
+                    <span id="timeSpan">-</span> | Vol: <span id="totalVolume">-</span> | Trades: <span id="totalTrades">-</span>
+                </div>
+                <table class="table table-sm table-striped small">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th class="text-end">Open</th>
+                            <th class="text-end">High</th>
+                            <th class="text-end">Low</th>
+                            <th class="text-end">Close</th>
+                            <th class="text-end">Vol</th>
+                        </tr>
+                    </thead>
+                    <tbody id="sampleDataBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card border-danger" id="errorCard" style="display:none;">
+            <div class="card-header text-bg-danger">Error</div>
+            <div class="card-body"><span id="errorMessage"></span></div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    let operationId = null;
+    let poll = null;
+    let allSymbols = [];
+    let selectedSymbol = 'BTCUSDT';
+    let startTime = null;
+
+    const exchangeSelect = document.getElementById('exchangeSelect');
+    const symbolSelect = document.getElementById('symbolSelect');
+    const symbolFilter = document.getElementById('symbolFilter');
+
+    // Load symbols when exchange changes
+    exchangeSelect.addEventListener('change', () => loadSymbols());
+    
+    // Filter symbols as user types (preserve selection)
+    symbolFilter.addEventListener('input', () => filterSymbols());
+
+    // When user selects a symbol, clear filter and remember selection
+    symbolSelect.addEventListener('change', () => {
+        if (symbolSelect.value) {
+            selectedSymbol = symbolSelect.value;
+            symbolFilter.value = '';
+        }
+    });
+
+    async function loadSymbols() {
+        const exchange = exchangeSelect.value;
+        symbolSelect.innerHTML = '<option value="">Loading...</option>';
+        symbolSelect.disabled = true;
+        symbolFilter.value = '';
+        
+        try {
+            const res = await fetch(`?handler=Symbols&exchange=${exchange}`);
+            if (!res.ok) throw new Error('Failed to load');
+            allSymbols = await res.json();
+            renderSymbols(allSymbols, selectedSymbol);
+        } catch (err) {
+            // Retry once after a short delay (handles cancelled requests on page load)
+            setTimeout(async () => {
+                try {
+                    const res = await fetch(`?handler=Symbols&exchange=${exchange}`);
+                    if (!res.ok) throw new Error('Failed');
+                    allSymbols = await res.json();
+                    renderSymbols(allSymbols, selectedSymbol);
+                } catch {
+                    symbolSelect.innerHTML = '<option value="">Failed to load - refresh page</option>';
+                }
+            }, 500);
+        }
+    }
+
+    function filterSymbols() {
+        const filter = symbolFilter.value.toUpperCase();
+        const filtered = allSymbols.filter(s => 
+            s.symbol.includes(filter) || 
+            s.baseAsset.includes(filter) || 
+            s.quoteAsset.includes(filter)
+        );
+        renderSymbols(filtered, selectedSymbol);
+    }
+
+    function renderSymbols(symbols, selectValue) {
+        const currentValue = selectValue || symbolSelect.value;
+        symbolSelect.innerHTML = '';
+        symbols.slice(0, 500).forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.symbol;
+            opt.textContent = s.displayName;
+            if (s.symbol === currentValue) opt.selected = true;
+            symbolSelect.appendChild(opt);
+        });
+        symbolSelect.disabled = false;
+        if (symbols.length > 500) {
+            const opt = document.createElement('option');
+            opt.disabled = true;
+            opt.textContent = `... ${symbols.length - 500} more`;
+            symbolSelect.appendChild(opt);
+        }
+    }
+
+    // Load symbols on page load
+    loadSymbols();
+
+    document.getElementById('ingestionForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = new FormData(e.target);
+        try {
+            const res = await fetch('?handler=StartIngestion', { method: 'POST', body: form });
+            const data = await res.json();
+            if (data.success) {
+                operationId = data.operationId;
+                showProgress();
+                startPolling();
+            } else {
+                showError(data.error || 'Failed to start');
+            }
+        } catch (err) {
+            showError(err.message);
+        }
+    });
+
+    document.getElementById('cancelBtn').addEventListener('click', async () => {
+        if (operationId) {
+            await fetch(`?handler=Cancel&operationId=${operationId}`, { method: 'POST' });
+            stopPolling();
+            resetUI();
+        }
+    });
+
+    function showProgress() {
+        document.getElementById('progressCard').style.display = 'block';
+        document.getElementById('resultsCard').style.display = 'none';
+        document.getElementById('errorCard').style.display = 'none';
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('cancelBtn').style.display = 'block';
+        document.getElementById('progressBar').style.width = '0%';
+        document.getElementById('progressBarText').textContent = '';
+        document.getElementById('progressPercent').textContent = '0%';
+        document.getElementById('progressMessage').textContent = 'Queued...';
+        document.getElementById('recordCount').textContent = '0';
+        document.getElementById('recordTotal').textContent = '?';
+        document.getElementById('statusBadge').textContent = 'Queued';
+        document.getElementById('statusBadge').className = 'badge bg-secondary';
+        document.getElementById('elapsedTime').textContent = '';
+        startTime = Date.now();
+    }
+
+    function showResults(r) {
+        document.getElementById('progressCard').style.display = 'none';
+        document.getElementById('resultsCard').style.display = 'block';
+        document.getElementById('errorCard').style.display = 'none';
+        resetButtons();
+
+        document.getElementById('statTotalRecords').textContent = r.totalRecords.toLocaleString();
+        document.getElementById('statHighPrice').textContent = r.highestPrice?.toFixed(2) || '-';
+        document.getElementById('statLowPrice').textContent = r.lowestPrice?.toFixed(2) || '-';
+        document.getElementById('statDuration').textContent = formatDuration(r.ingestionDuration);
+        document.getElementById('timeSpan').textContent = `${formatDate(r.firstTimestampUtc)} ? ${formatDate(r.lastTimestampUtc)}`;
+        document.getElementById('totalVolume').textContent = r.totalVolume?.toLocaleString(undefined, {maximumFractionDigits: 2}) || '-';
+        document.getElementById('totalTrades').textContent = r.totalTrades?.toLocaleString() || '-';
+
+        const tbody = document.getElementById('sampleDataBody');
+        tbody.innerHTML = '';
+        (r.sampleRecords || []).forEach(k => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${formatDate(k.openTimeUtc)}</td><td class="text-end">${k.open.toFixed(2)}</td><td class="text-end">${k.high.toFixed(2)}</td><td class="text-end">${k.low.toFixed(2)}</td><td class="text-end">${k.close.toFixed(2)}</td><td class="text-end">${k.volume.toFixed(4)}</td>`;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function showError(msg) {
+        document.getElementById('progressCard').style.display = 'none';
+        document.getElementById('resultsCard').style.display = 'none';
+        document.getElementById('errorCard').style.display = 'block';
+        document.getElementById('errorMessage').textContent = msg;
+        resetButtons();
+    }
+
+    function resetButtons() {
+        document.getElementById('startBtn').disabled = false;
+        document.getElementById('cancelBtn').style.display = 'none';
+    }
+
+    function resetUI() {
+        document.getElementById('progressCard').style.display = 'none';
+        resetButtons();
+    }
+
+    function updateProgress(p) {
+        const pct = Math.min(100, p.percentComplete).toFixed(1);
+        const bar = document.getElementById('progressBar');
+        bar.style.width = pct + '%';
+        document.getElementById('progressBarText').textContent = pct > 10 ? pct + '%' : '';
+        document.getElementById('progressPercent').textContent = pct + '%';
+        document.getElementById('progressMessage').textContent = p.message || 'Processing...';
+        document.getElementById('recordCount').textContent = p.recordsFetched.toLocaleString();
+        document.getElementById('recordTotal').textContent = p.estimatedTotalRecords > 0 
+            ? '~' + p.estimatedTotalRecords.toLocaleString() 
+            : '?';
+        
+        // Update status badge
+        const badge = document.getElementById('statusBadge');
+        if (p.status === 1) { // InProgress
+            badge.textContent = 'Running';
+            badge.className = 'badge bg-primary';
+            bar.classList.add('progress-bar-animated');
+        } else if (p.status === 0) { // NotStarted/Queued
+            badge.textContent = 'Queued';
+            badge.className = 'badge bg-secondary';
+        }
+        
+        // Update elapsed time
+        if (startTime) {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            document.getElementById('elapsedTime').textContent = `? ${formatElapsed(elapsed)}`;
+        }
+    }
+    
+    function formatElapsed(seconds) {
+        if (seconds < 60) return `${seconds}s`;
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins}m ${secs}s`;
+    }
+
+    function startPolling() {
+        poll = setInterval(async () => {
+            try {
+                const res = await fetch(`?handler=Progress&operationId=${operationId}`);
+                const p = await res.json();
+                updateProgress(p);
+                // status is numeric: 0=NotStarted, 1=InProgress, 2=Completed, 3=Failed
+                if (p.status === 2) {
+                    stopPolling();
+                    showResults(p.result);
+                } else if (p.status === 3) {
+                    stopPolling();
+                    showError(p.errorMessage || 'Failed');
+                }
+            } catch (e) { console.error(e); }
+        }, 500);
+    }
+
+    function stopPolling() {
+        if (poll) { clearInterval(poll); poll = null; }
+    }
+
+    function formatDuration(d) {
+        if (!d) return '-';
+        const parts = d.split(':');
+        if (parts.length >= 3) {
+            const secs = parseFloat(parts[2]);
+            return secs.toFixed(1) + 's';
+        }
+        return d;
+    }
+
+    function formatDate(d) {
+        if (!d) return '-';
+        return d.replace('T', ' ').substring(0, 19);
+    }
+</script>
+}

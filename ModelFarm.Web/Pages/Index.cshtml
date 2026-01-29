@@ -1,0 +1,28 @@
+﻿@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Home";
+}
+
+<h4>ModelFarm</h4>
+<p>Data pipeline for data ingestion and model training.</p>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">Data Ingestion</div>
+            <div class="card-body">
+                <p class="card-text small">Fetch historical kline data from Binance for supported trading pairs.</p>
+                <a asp-page="/Ingestion" class="btn btn-primary btn-sm">Open</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">Model Training</div>
+            <div class="card-body">
+                <p class="card-text small text-muted">Not implemented.</p>
+            </div>
+        </div>
+    </div>
+</div>

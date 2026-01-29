@@ -1,0 +1,268 @@
+@page
+@model ModelFarm.Web.Pages.DatasetsModel
+@{
+    ViewData["Title"] = "Datasets";
+}
+
+<h4 class="mb-3">Datasets</h4>
+
+<div class="row">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">New Dataset</div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label" data-bs-toggle="tooltip" title="Select the type of dataset you want to create. Different types have different data sources and use cases.">Dataset Type</label>
+                    <select class="form-select form-select-sm" id="dsType">
+                        <option value="">Select type...</option>
+                        @foreach (var item in Model.AvailableDatasetTypes)
+                        {
+                            <option value="@item.Value">@item.Text</option>
+                        }
+                    </select>
+                </div>
+                
+                <!-- Exchange History Form -->
+                <form id="datasetForm" class="dataset-type-form" data-type="ExchangeHistory" style="display: none;">
+                    <div class="mb-2">
+                        <label class="form-label" data-bs-toggle="tooltip" title="A descriptive name for this dataset to identify it later (e.g., 'BTC 2023 Hourly' or 'ETH Daily Full History').">Name</label>
+                        <input type="text" class="form-control form-control-sm" id="datasetName" required>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" data-bs-toggle="tooltip" title="The cryptocurrency exchange to fetch historical price data from. Different exchanges may have different data availability and history depth.">Exchange</label>
+                        <select class="form-select form-select-sm" id="dsExchange" asp-items="Model.AvailableExchanges"></select>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" data-bs-toggle="tooltip" title="The trading pair symbol (e.g., BTCUSDT, ETHUSDT). This determines which asset's price history will be downloaded.">Symbol</label>
+                        <select class="form-select form-select-sm" id="dsSymbol"></select>
+                        <input type="text" class="form-control form-control-sm mt-1" id="dsSymbolFilter" placeholder="Filter...">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" data-bs-toggle="tooltip" title="The time interval between each candlestick/kline. Shorter intervals (1m, 5m) provide more data points but may contain more noise. Longer intervals (1h, 1d) are smoother but have fewer samples.">Interval</label>
+                        <select class="form-select form-select-sm" id="dsInterval" asp-items="Model.AvailableIntervals"></select>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" data-bs-toggle="tooltip" title="The start date for historical data. Earlier dates provide more training data but may include different market regimes.">Start</label>
+                        <input type="date" class="form-control form-control-sm" id="dsStart" value="@Model.DatasetStartDate.ToString("yyyy-MM-dd")">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" data-bs-toggle="tooltip" title="The end date for historical data. Using recent data ensures the model learns from current market conditions.">End</label>
+                        <input type="date" class="form-control form-control-sm" id="dsEnd" value="@Model.DatasetEndDate.ToString("yyyy-MM-dd")">
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm w-100">Create Dataset</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between">
+                <span>Datasets</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadDatasets()">Refresh</button>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Symbol</th>
+                            <th>Interval</th>
+                            <th>Range</th>
+                            <th>Status</th>
+                            <th>Records</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="datasetsBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    let allSymbols = [];
+    let pollIntervals = {};
+    const csrfToken = '@Html.AntiForgeryToken()'.match(/value="([^"]+)"/)?.[1] || '';
+
+    // Initialize Bootstrap tooltips
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+        new bootstrap.Tooltip(el);
+    });
+
+    // Helper for POST requests with anti-forgery token
+    async function postWithToken(url, body) {
+        if (body instanceof FormData) {
+            body.append('__RequestVerificationToken', csrfToken);
+        }
+        return fetch(url, { method: 'POST', body });
+    }
+
+    // ==================== Symbol Loading ====================
+    document.getElementById('dsExchange').addEventListener('change', loadSymbols);
+    document.getElementById('dsSymbolFilter').addEventListener('input', filterSymbols);
+
+    async function loadSymbols() {
+        const select = document.getElementById('dsSymbol');
+        select.innerHTML = '<option>Loading...</option>';
+        try {
+            const res = await fetch(`?handler=Symbols&exchange=${document.getElementById('dsExchange').value}`);
+            allSymbols = await res.json();
+            renderSymbols(allSymbols);
+        } catch (e) {
+            select.innerHTML = '<option>Failed to load</option>';
+        }
+    }
+
+    function filterSymbols() {
+        const filter = document.getElementById('dsSymbolFilter').value.toUpperCase();
+        const filtered = allSymbols.filter(s => s.symbol.includes(filter) || s.baseAsset.includes(filter));
+        renderSymbols(filtered);
+    }
+
+    function renderSymbols(symbols) {
+        const select = document.getElementById('dsSymbol');
+        select.innerHTML = symbols.slice(0, 200).map(s =>
+            `<option value="${s.symbol}">${s.displayName}</option>`
+        ).join('');
+    }
+
+    // ==================== Datasets ====================
+    document.getElementById('dsType').addEventListener('change', function() {
+        const selectedType = this.value;
+        document.querySelectorAll('.dataset-type-form').forEach(form => {
+            form.style.display = (selectedType && form.dataset.type === selectedType) ? 'block' : 'none';
+        });
+        if (selectedType === 'ExchangeHistory') {
+            loadSymbols();
+        }
+    });
+
+    document.getElementById('datasetForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = new FormData();
+        form.append('DatasetType', document.getElementById('dsType').value);
+        form.append('DatasetName', document.getElementById('datasetName').value);
+        form.append('Exchange', document.getElementById('dsExchange').value);
+        form.append('Symbol', document.getElementById('dsSymbol').value);
+        form.append('Interval', document.getElementById('dsInterval').value);
+        form.append('DatasetStartDate', document.getElementById('dsStart').value);
+        form.append('DatasetEndDate', document.getElementById('dsEnd').value);
+
+        const res = await postWithToken('?handler=CreateDataset', form);
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById('datasetName').value = '';
+            loadDatasets();
+        } else {
+            alert(data.error);
+        }
+    });
+
+    async function loadDatasets() {
+        const res = await fetch('?handler=Datasets');
+        const datasets = await res.json();
+        const tbody = document.getElementById('datasetsBody');
+        tbody.innerHTML = datasets.map(d => {
+            const isDownloading = d.status === 1;
+            const typeLabel = d.type === 0 ? 'Exchange History' : d.type;
+            const progressHtml = isDownloading && d.ingestionOperationId
+                ? `<div class="progress-container" data-operation-id="${d.ingestionOperationId}">
+                     <div class="progress" style="height: 18px; min-width: 100px;">
+                       <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%"></div>
+                     </div>
+                     <small class="text-muted progress-text">0 / ?</small>
+                   </div>`
+                : (d.recordCount?.toLocaleString() ?? '-');
+            
+            return `<tr>
+                <td>${d.name}</td>
+                <td><span class="badge bg-secondary">${typeLabel}</span></td>
+                <td>${d.symbol}</td>
+                <td>${d.interval}</td>
+                <td class="small">${formatDate(d.startTimeUtc)} - ${formatDate(d.endTimeUtc)}</td>
+                <td><span class="badge bg-${statusColor(d.status)}">${statusText(d.status)}</span></td>
+                <td>${progressHtml}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteDataset('${d.id}')" title="Delete">&times;</button>
+                </td>
+            </tr>`;
+        }).join('');
+        
+        document.querySelectorAll('.progress-container').forEach(el => {
+            const opId = el.dataset.operationId;
+            if (opId && !pollIntervals[opId]) {
+                pollDatasetProgress(opId, el);
+            }
+        });
+    }
+
+    async function deleteDataset(id) {
+        const form = new FormData();
+        await postWithToken(`?handler=DeleteDataset&datasetId=${id}`, form);
+        loadDatasets();
+    }
+    
+    async function pollDatasetProgress(operationId, container) {
+        const updateProgress = async () => {
+            try {
+                const res = await fetch(`?handler=DatasetProgress&operationId=${operationId}`);
+                const progress = await res.json();
+                
+                const bar = container.querySelector('.progress-bar');
+                const text = container.querySelector('.progress-text');
+                
+                if (progress.status === 2) {
+                    bar.style.width = '100%';
+                    bar.classList.remove('progress-bar-animated');
+                    text.textContent = `${progress.recordsFetched?.toLocaleString() ?? 0} records`;
+                    clearInterval(pollIntervals[operationId]);
+                    delete pollIntervals[operationId];
+                    setTimeout(loadDatasets, 500);
+                } else if (progress.status === 3) {
+                    bar.classList.remove('progress-bar-animated');
+                    bar.classList.add('bg-danger');
+                    text.textContent = progress.errorMessage || 'Failed';
+                    clearInterval(pollIntervals[operationId]);
+                    delete pollIntervals[operationId];
+                    setTimeout(loadDatasets, 500);
+                } else {
+                    const current = progress.recordsFetched || 0;
+                    const total = progress.estimatedTotalRecords || 0;
+                    
+                    if (total > 0 && current > 0) {
+                        const pct = Math.min(99, (current / total) * 100);
+                        bar.style.width = pct.toFixed(1) + '%';
+                        text.textContent = `${current.toLocaleString()} / ~${total.toLocaleString()}`;
+                    } else if (progress.message) {
+                        text.textContent = progress.message;
+                    } else {
+                        text.textContent = 'Queued...';
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to fetch progress:', e);
+            }
+        };
+        
+        await updateProgress();
+        pollIntervals[operationId] = setInterval(updateProgress, 1000);
+    }
+
+    // ==================== Helpers ====================
+    function statusColor(s) { return s === 2 ? 'success' : s === 1 ? 'warning' : s === 3 ? 'danger' : 'secondary'; }
+    function statusText(s) { return ['Pending', 'Downloading', 'Ready', 'Failed'][s] || 'Unknown'; }
+    function formatDate(d) { return d ? d.substring(0, 10) : '-'; }
+
+    // ==================== Init ====================
+    loadDatasets();
+
+    setInterval(() => {
+        if (Object.keys(pollIntervals).length === 0) {
+            loadDatasets();
+        }
+    }, 5000);
+</script>
+}

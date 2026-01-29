@@ -1,0 +1,436 @@
+@page
+@model ModelFarm.Web.Pages.JobsModel
+@{
+    ViewData["Title"] = "Training Jobs";
+}
+
+<h4 class="mb-3">Training Jobs</h4>
+
+<div class="row">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">New Training Job</div>
+            <div class="card-body">
+                <form id="jobForm">
+                    <div class="mb-2">
+                        <label class="form-label" data-bs-toggle="tooltip" title="The training configuration to use for this job. Each configuration defines the model architecture, hyperparameters, dataset, and performance requirements.">Configuration</label>
+                        <select class="form-select form-select-sm" id="jobConfigSelect" required>
+                            <option value="">Select a configuration...</option>
+                        </select>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" data-bs-toggle="tooltip" title="Optional custom name for this training job. If left empty, a name will be auto-generated from the configuration name and timestamp.">Job Name (optional)</label>
+                        <input type="text" class="form-control form-control-sm" id="jobName" placeholder="Auto-generated if empty">
+                    </div>
+
+                    <hr class="my-2">
+                    <small class="text-muted">Execution Options</small>
+
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="jobEarlyStopping" checked>
+                        <label class="form-check-label small" for="jobEarlyStopping" 
+                               data-bs-toggle="tooltip" data-bs-placement="right"
+                               title="Automatically stops training when validation loss stops improving for a specified number of epochs (patience). This prevents overfitting and saves time by not training longer than necessary. Recommended to keep enabled.">
+                            Use early stopping
+                        </label>
+                    </div>
+
+                    <div class="form-check mt-1">
+                        <input class="form-check-input" type="checkbox" id="jobRetryUntilSuccess">
+                        <label class="form-check-label small" for="jobRetryUntilSuccess"
+                               data-bs-toggle="tooltip" data-bs-placement="right"
+                               title="If enabled, training will automatically restart with different conditions when the model fails to meet the performance requirements (Min Sharpe, Max Drawdown, etc.). Training continues until requirements are met or max retries is reached.">
+                            Retry until requirements met
+                        </label>
+                    </div>
+
+                    <div id="retryOptions" class="ms-4 mt-1" style="display: none;">
+                        <div class="mb-2">
+                            <label class="form-label small" 
+                                   data-bs-toggle="tooltip" data-bs-placement="right"
+                                   title="Maximum number of training attempts before giving up. Each retry uses different random initialization or shuffled data to find a better solution.">
+                                Max Retries
+                            </label>
+                            <input type="number" class="form-control form-control-sm" id="jobMaxRetries" value="10">
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="jobShuffleOnRetry">
+                            <label class="form-check-label small" for="jobShuffleOnRetry"
+                                   data-bs-toggle="tooltip" data-bs-placement="right"
+                                   title="Randomizes the order of training samples between retry attempts. This can help the model escape local minima and find better solutions by presenting data in a different sequence.">
+                                Shuffle data on retry
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="jobAdjustLR">
+                            <label class="form-check-label small" for="jobAdjustLR"
+                                   data-bs-toggle="tooltip" data-bs-placement="right"
+                                   title="Reduces the learning rate by 50% on each retry attempt. Lower learning rates can help the model converge more precisely, though training may take longer. Useful when the model oscillates or fails to stabilize.">
+                                Reduce learning rate on retry
+                            </label>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-sm w-100 mt-2">Start Training</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between">
+                <span>Training Jobs</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadJobs()">Refresh</button>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Status</th>
+                            <th>Attempt</th>
+                            <th style="width: 150px;">Progress</th>
+                            <th>Train Loss</th>
+                            <th>Val Loss</th>
+                            <th style="width: 100px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobsBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Results Detail Panel -->
+<div id="resultsPanel" class="card mt-3" style="display:none;">
+    <div class="card-header d-flex justify-content-between">
+        <span>Training Results: <strong id="resultJobName"></strong></span>
+        <button class="btn btn-sm btn-outline-secondary" onclick="hideResults()">Close</button>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-4">
+                <h6>Training Metrics</h6>
+                <table class="table table-sm">
+                    <tr><td>Final Training Loss</td><td id="resultTrainLoss">-</td></tr>
+                    <tr><td>Final Validation Loss</td><td id="resultValLoss">-</td></tr>
+                    <tr><td>Test Loss</td><td id="resultTestLoss">-</td></tr>
+                    <tr><td>Epochs Trained</td><td id="resultEpochs">-</td></tr>
+                    <tr><td>Early Stop</td><td id="resultEarlyStop">-</td></tr>
+                    <tr><td>Retry Attempts</td><td id="resultRetryAttempts">-</td></tr>
+                    <tr><td>Duration</td><td id="resultDuration">-</td></tr>
+                </table>
+            </div>
+            <div class="col-md-4">
+                <h6>Performance Metrics</h6>
+                <table class="table table-sm">
+                    <tr><td>Total Return</td><td id="resultReturn">-</td></tr>
+                    <tr><td>Annualized Return</td><td id="resultAnnReturn">-</td></tr>
+                    <tr><td>Sharpe Ratio</td><td id="resultSharpe">-</td></tr>
+                    <tr><td>Sortino Ratio</td><td id="resultSortino">-</td></tr>
+                    <tr><td>Max Drawdown</td><td id="resultDrawdown">-</td></tr>
+                    <tr><td>Calmar Ratio</td><td id="resultCalmar">-</td></tr>
+                </table>
+            </div>
+            <div class="col-md-4">
+                <h6>Trade Statistics</h6>
+                <table class="table table-sm">
+                    <tr><td>Total Trades</td><td id="resultTrades">-</td></tr>
+                    <tr><td>Win Rate</td><td id="resultWinRate">-</td></tr>
+                    <tr><td>Profit Factor</td><td id="resultProfitFactor">-</td></tr>
+                    <tr><td>Avg Win</td><td id="resultAvgWin">-</td></tr>
+                    <tr><td>Avg Loss</td><td id="resultAvgLoss">-</td></tr>
+                    <tr><td>Final Portfolio</td><td id="resultFinalValue">-</td></tr>
+                </table>
+            </div>
+        </div>
+        <div class="row mt-2">
+            <div class="col-12">
+                <span id="resultMeetsReq" class="badge"></span>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    let jobPollIntervals = {};
+    let currentJobs = [];
+    const csrfToken = '@Html.AntiForgeryToken()'.match(/value="([^"]+)"/)?.[1] || '';
+
+    // Initialize Bootstrap tooltips
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+        new bootstrap.Tooltip(el);
+    });
+
+    // Helper for POST requests with anti-forgery token
+    async function postWithToken(url, body) {
+        if (body instanceof FormData) {
+            body.append('__RequestVerificationToken', csrfToken);
+        }
+        return fetch(url, { method: 'POST', body });
+    }
+
+    // ==================== Training Jobs ====================
+    document.getElementById('jobRetryUntilSuccess').addEventListener('change', function() {
+        document.getElementById('retryOptions').style.display = this.checked ? 'block' : 'none';
+    });
+    
+    
+    document.getElementById('jobForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const configId = document.getElementById('jobConfigSelect').value;
+        if (!configId) {
+            alert('Please select a configuration');
+            return;
+        }
+        
+        const form = new FormData();
+        form.append('ConfigurationId', configId);
+        
+        const jobName = document.getElementById('jobName').value;
+        if (jobName) form.append('JobName', jobName);
+        
+        form.append('UseEarlyStopping', document.getElementById('jobEarlyStopping').checked);
+        form.append('RetryUntilSuccess', document.getElementById('jobRetryUntilSuccess').checked);
+        form.append('MaxRetryAttempts', document.getElementById('jobMaxRetries').value);
+        form.append('ShuffleOnRetry', document.getElementById('jobShuffleOnRetry').checked);
+        form.append('AdjustLearningRateOnRetry', document.getElementById('jobAdjustLR').checked);
+        
+        const res = await postWithToken('?handler=StartTraining', form);
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById('jobName').value = '';
+            loadJobs();
+        } else {
+            alert(data.error);
+        }
+    });
+
+    async function loadConfigs() {
+        const res = await fetch('?handler=Configs');
+        const configs = await res.json();
+        const select = document.getElementById('jobConfigSelect');
+        const currentValue = select.value;
+        select.innerHTML = '<option value="">Select a configuration...</option>' + 
+            configs.map(c => {
+                const typeLabel = c.type === 0 ? 'Quant Strategy' : c.type;
+                return `<option value="${c.id}">[${typeLabel}] ${c.name} (${c.modelType})</option>`;
+            }).join('');
+        if (currentValue) select.value = currentValue;
+    }
+    
+    async function loadJobs() {
+        const res = await fetch('?handler=Jobs');
+        const jobs = await res.json();
+        currentJobs = jobs;
+        const tbody = document.getElementById('jobsBody');
+        tbody.innerHTML = jobs.map(j => {
+            const isActive = j.status >= 0 && j.status <= 4;
+            const isPaused = j.isPaused;
+            const isCompleted = j.status === 5;
+            const isFailed = j.status === 6;
+            const isCancelled = j.status === 7;
+            const progressClass = isActive && !isPaused ? 'progress-bar-striped progress-bar-animated' : '';
+            const progressColor = isCompleted ? 'bg-success' : isFailed ? 'bg-danger' : isPaused ? 'bg-warning' : '';
+            
+            let buttons = '';
+            if (isActive && !isPaused) {
+                buttons += `<button class="btn btn-sm btn-outline-warning me-1" onclick="pauseJob('${j.id}')" title="Pause"><i class="bi bi-pause-fill"></i></button>`;
+                buttons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${j.id}')" title="Cancel"><i class="bi bi-x-lg"></i></button>`;
+            } else if (isPaused) {
+                buttons += `<button class="btn btn-sm btn-outline-success me-1" onclick="resumeJob('${j.id}')" title="Resume"><i class="bi bi-play-fill"></i></button>`;
+                buttons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${j.id}')" title="Cancel"><i class="bi bi-x-lg"></i></button>`;
+            } else if (isCompleted) {
+                buttons += `<button class="btn btn-sm btn-outline-primary me-1" onclick="showResults('${j.id}')" title="Results"><i class="bi bi-bar-chart-fill"></i></button>`;
+                if (!j.result?.meetsRequirements) {
+                    buttons += `<button class="btn btn-sm btn-outline-secondary" onclick="retryJob('${j.id}')" title="Retry"><i class="bi bi-arrow-clockwise"></i></button>`;
+                }
+            } else if (isFailed || isCancelled) {
+                buttons += `<button class="btn btn-sm btn-outline-secondary" onclick="retryJob('${j.id}')" title="Retry"><i class="bi bi-arrow-clockwise"></i></button>`;
+            }
+            
+            return `
+            <tr data-job-id="${j.id}">
+                <td>${j.name}</td>
+                <td><span class="badge bg-${jobStatusColor(j.status)}${isPaused ? ' bg-warning' : ''}">${isPaused ? 'Paused' : jobStatusText(j.status)}</span></td>
+                <td><span class="badge bg-secondary">${j.currentAttempt || 1}/${j.maxAttempts || 1}</span></td>
+                <td>
+                    <div class="progress" style="height:18px;">
+                        <div class="progress-bar ${progressClass} ${progressColor}" style="width:${j.progressPercent}%"></div>
+                    </div>
+                    <small class="text-muted">${j.currentEpoch}/${j.totalEpochs} epochs</small>
+                </td>
+                <td>${j.trainingLoss?.toFixed(6) ?? '-'}</td>
+                <td>${j.validationLoss?.toFixed(6) ?? '-'}</td>
+                <td class="text-nowrap">${buttons}</td>
+            </tr>`;
+        }).join('');
+        
+        jobs.filter(j => j.status >= 0 && j.status <= 4).forEach(j => {
+            if (!jobPollIntervals[j.id]) {
+                pollJobStatus(j.id);
+            }
+        });
+        
+        jobs.filter(j => j.status >= 5).forEach(j => {
+            if (jobPollIntervals[j.id]) {
+                clearInterval(jobPollIntervals[j.id]);
+                delete jobPollIntervals[j.id];
+            }
+        });
+    }
+    
+    async function pollJobStatus(jobId) {
+        const updateJob = async () => {
+            try {
+                const res = await fetch(`?handler=JobStatus&jobId=${jobId}`);
+                const job = await res.json();
+                if (!job) return;
+                
+                const row = document.querySelector(`tr[data-job-id="${jobId}"]`);
+                if (!row) return;
+                
+                // Update status badge
+                const badges = row.querySelectorAll('.badge');
+                const statusBadge = badges[0];
+                if (job.isPaused) {
+                    statusBadge.className = 'badge bg-warning';
+                    statusBadge.textContent = 'Paused';
+                } else {
+                    statusBadge.className = `badge bg-${jobStatusColor(job.status)}`;
+                    statusBadge.textContent = jobStatusText(job.status);
+                }
+                
+                // Update attempt badge
+                const attemptBadge = badges[1];
+                attemptBadge.textContent = `${job.currentAttempt || 1}/${job.maxAttempts || 1}`;
+                
+                // Update progress bar
+                const progressBar = row.querySelector('.progress-bar');
+                progressBar.style.width = `${job.progressPercent}%`;
+                
+                if (job.isPaused) {
+                    progressBar.classList.remove('progress-bar-striped', 'progress-bar-animated');
+                    progressBar.classList.add('bg-warning');
+                } else if (job.status >= 5) {
+                    progressBar.classList.remove('progress-bar-striped', 'progress-bar-animated');
+                    if (job.status === 5) progressBar.classList.add('bg-success');
+                    if (job.status === 6) progressBar.classList.add('bg-danger');
+                    clearInterval(jobPollIntervals[jobId]);
+                    delete jobPollIntervals[jobId];
+                    setTimeout(loadJobs, 500);
+                }
+                
+                // Update epoch count
+                row.querySelectorAll('small')[0].textContent = `${job.currentEpoch}/${job.totalEpochs} epochs`;
+                
+                // Update losses
+                const cells = row.querySelectorAll('td');
+                cells[4].textContent = job.trainingLoss?.toFixed(6) ?? '-';
+                cells[5].textContent = job.validationLoss?.toFixed(6) ?? '-';
+                
+            } catch (e) {
+                console.error('Failed to poll job status:', e);
+            }
+        };
+        
+        await updateJob();
+        jobPollIntervals[jobId] = setInterval(updateJob, 500);
+    }
+
+    async function cancelJob(jobId) {
+        const form = new FormData();
+        await postWithToken(`?handler=CancelJob&jobId=${jobId}`, form);
+        loadJobs();
+    }
+
+    async function pauseJob(jobId) {
+        const form = new FormData();
+        await postWithToken(`?handler=PauseJob&jobId=${jobId}`, form);
+        loadJobs();
+    }
+
+    async function resumeJob(jobId) {
+        const form = new FormData();
+        await postWithToken(`?handler=ResumeJob&jobId=${jobId}`, form);
+        loadJobs();
+    }
+
+    async function retryJob(jobId) {
+        const form = new FormData();
+        await postWithToken(`?handler=RetryJob&jobId=${jobId}`, form);
+        loadJobs();
+    }
+    
+    function showResults(jobId) {
+        const job = currentJobs.find(j => j.id === jobId);
+        if (!job || !job.result) return;
+        
+        const r = job.result;
+        const m = r.backtestMetrics;
+        
+        document.getElementById('resultJobName').textContent = job.name;
+        
+        document.getElementById('resultTrainLoss').textContent = r.finalTrainingLoss?.toFixed(6) ?? '-';
+        document.getElementById('resultValLoss').textContent = r.finalValidationLoss?.toFixed(6) ?? '-';
+        document.getElementById('resultTestLoss').textContent = r.testLoss?.toFixed(6) ?? '-';
+        document.getElementById('resultEpochs').textContent = r.epochsTrained ?? '-';
+        document.getElementById('resultEarlyStop').textContent = r.earlyStoppedTriggered ? 'Yes' : 'No';
+        document.getElementById('resultRetryAttempts').textContent = r.retryAttempts ?? 1;
+        document.getElementById('resultDuration').textContent = r.trainingDuration ? formatDuration(r.trainingDuration) : '-';
+        
+        document.getElementById('resultReturn').textContent = m ? `${(m.totalReturn * 100).toFixed(2)}%` : '-';
+        document.getElementById('resultAnnReturn').textContent = m ? `${(m.annualizedReturn * 100).toFixed(2)}%` : '-';
+        document.getElementById('resultSharpe').textContent = m?.sharpeRatio?.toFixed(3) ?? '-';
+        document.getElementById('resultSortino').textContent = m?.sortinoRatio?.toFixed(3) ?? '-';
+        document.getElementById('resultDrawdown').textContent = m ? `${(m.maxDrawdown * 100).toFixed(2)}%` : '-';
+        document.getElementById('resultCalmar').textContent = m?.calmarRatio?.toFixed(3) ?? '-';
+        
+        document.getElementById('resultTrades').textContent = m?.totalTrades ?? '-';
+        document.getElementById('resultWinRate').textContent = m ? `${(m.winRate * 100).toFixed(1)}%` : '-';
+        document.getElementById('resultProfitFactor').textContent = m?.profitFactor?.toFixed(2) ?? '-';
+        document.getElementById('resultAvgWin').textContent = m?.averageWin ? `$${m.averageWin.toFixed(2)}` : '-';
+        document.getElementById('resultAvgLoss').textContent = m?.averageLoss ? `$${m.averageLoss.toFixed(2)}` : '-';
+        document.getElementById('resultFinalValue').textContent = m?.finalPortfolioValue ? `$${m.finalPortfolioValue.toLocaleString()}` : '-';
+        
+        const badge = document.getElementById('resultMeetsReq');
+        if (r.meetsRequirements) {
+            badge.className = 'badge bg-success';
+            badge.textContent = 'Meets Performance Requirements';
+        } else {
+            badge.className = 'badge bg-warning';
+            badge.textContent = 'Does Not Meet Performance Requirements';
+        }
+        
+        document.getElementById('resultsPanel').style.display = 'block';
+    }
+    
+    function hideResults() {
+        document.getElementById('resultsPanel').style.display = 'none';
+    }
+
+    // ==================== Helpers ====================
+    function jobStatusColor(s) { return s === 5 ? 'success' : s === 6 ? 'danger' : s === 7 ? 'secondary' : 'warning'; }
+    function jobStatusText(s) { return ['Queued', 'WaitingForData', 'Preprocessing', 'Training', 'Backtesting', 'Completed', 'Failed', 'Cancelled'][s] || 'Unknown'; }
+    function formatDuration(d) { 
+        if (!d) return '-';
+        const parts = d.split(':');
+        return parts.length >= 2 ? `${parts[1]}m ${parseFloat(parts[2]).toFixed(0)}s` : d;
+    }
+
+    // ==================== Init ====================
+    loadConfigs();
+    loadJobs();
+    
+    setInterval(loadConfigs, 10000);
+    
+    setInterval(() => {
+        if (Object.keys(jobPollIntervals).length === 0) {
+            loadJobs();
+        }
+    }, 5000);
+</script>
+}
