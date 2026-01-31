@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using ModelFarm.Application.ML;
 using ModelFarm.Application.Services;
 using ModelFarm.Application.Tasks;
@@ -30,7 +31,12 @@ public static class DependencyInjection
         services.AddScoped<ITrainingService, TrainingService>();
 
         // Background services
-        services.AddHostedService<TaskProcessorService>();
+        // TaskProcessorService with reduced concurrency (2) to prevent OOM during training
+        services.AddHostedService(sp => new TaskProcessorService(
+            sp.GetRequiredService<IBackgroundTaskManager>(),
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<ILogger<TaskProcessorService>>(),
+            maxConcurrency: 2));
         services.AddHostedService<OperationRecoveryService>();
         services.AddHostedService<TrainingJobRecoveryService>();
 

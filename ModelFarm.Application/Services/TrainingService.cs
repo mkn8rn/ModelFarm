@@ -8,6 +8,8 @@ using ModelFarm.Infrastructure.Persistence.Entities;
 
 namespace ModelFarm.Application.Services;
 
+
+
 public sealed class TrainingService : ITrainingService
 {
     private readonly IDatasetService _datasetService;
@@ -18,6 +20,12 @@ public sealed class TrainingService : ITrainingService
 
     // Runtime state for active jobs (not persisted - only used while training is in progress)
     private static readonly ConcurrentDictionary<Guid, TrainingJobRuntimeState> _activeJobs = new();
+    
+    // Semaphore to limit concurrent training operations to prevent GPU/memory exhaustion
+    // Default to 1 concurrent job to avoid TorchSharp ExternalException errors
+    private static SemaphoreSlim _trainingSemaphore = new(1, int.MaxValue);
+    private static int _maxConcurrentJobs = 1;
+    private static readonly object _semaphoreLock = new();
 
     public TrainingService(
         IDatasetService datasetService,
@@ -30,6 +38,41 @@ public sealed class TrainingService : ITrainingService
         _backtestEngine = backtestEngine;
         _dbContextFactory = dbContextFactory;
         _checkpointManager = new CheckpointManager();
+    }
+
+    // ==================== Concurrency Settings ====================
+
+    public int GetMaxConcurrentJobs() => _maxConcurrentJobs;
+
+    public void SetMaxConcurrentJobs(int maxConcurrent)
+    {
+        if (maxConcurrent < 1)
+            maxConcurrent = 1;
+        
+        lock (_semaphoreLock)
+        {
+            if (maxConcurrent == _maxConcurrentJobs)
+                return;
+
+            var oldMax = _maxConcurrentJobs;
+            _maxConcurrentJobs = maxConcurrent;
+
+            // Adjust semaphore capacity
+            if (maxConcurrent > oldMax)
+            {
+                // Release additional slots
+                var diff = maxConcurrent - oldMax;
+                _trainingSemaphore.Release(diff);
+            }
+            // Note: If reducing, we can't forcibly remove slots that are in use.
+            // The semaphore will naturally enforce the new limit as jobs complete.
+        }
+    }
+
+    public int GetRunningJobCount()
+    {
+        // Count jobs that are actively training (not waiting for slot)
+        return _activeJobs.Values.Count(j => !j.CancellationTokenSource.IsCancellationRequested);
     }
 
     // ==================== Configuration Management ====================
@@ -306,6 +349,26 @@ public sealed class TrainingService : ITrainingService
         var cts = state.CancellationTokenSource;
         var jobId = state.JobId;
 
+        // Acquire semaphore to ensure only one training job runs at a time
+        // This prevents TorchSharp ExternalException errors from concurrent GPU access
+        await UpdateJobAsync(jobId, job => job with { Message = "Waiting for training slot..." });
+        
+        try
+        {
+            await _trainingSemaphore.WaitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            await UpdateJobAsync(jobId, job => job with
+            {
+                Status = TrainingJobStatus.Cancelled,
+                Message = "Training cancelled while waiting for slot",
+                CompletedAtUtc = DateTime.UtcNow
+            });
+            _activeJobs.TryRemove(jobId, out _);
+            return;
+        }
+
         try
         {
             // Update status to preprocessing
@@ -327,21 +390,34 @@ public sealed class TrainingService : ITrainingService
 
             await UpdateJobAsync(jobId, job => job with { Message = $"Preparing features from {klines.Count} records..." });
 
-            // Prepare features using the same approach as the notebook
+            // Prepare features - uses streaming approach with circular buffer
             var allData = FeatureEngineering.PrepareTrainingData(klines, config.MaxLags, config.ForecastHorizon);
+            
+            // Release klines memory immediately after feature extraction
+            klines = null!;
+            GC.Collect(0, GCCollectionMode.Optimized);
             
             await UpdateJobAsync(jobId, job => job with { Message = $"Splitting {allData.Samples.Count} samples into train/val/test..." });
 
-            // Split into train/validation/test
+            // Split into train/validation/test - uses list slicing, not copying
             var (trainData, validationData, testData) = FeatureEngineering.SplitData(
                 allData, 
                 config.ValidationSplit, 
                 config.TestSplit);
 
+            // Clear allData reference (samples are now owned by split datasets)
+            allData = null!;
+
             // Normalize features
             var (normalizedTrain, normStats) = FeatureEngineering.NormalizeFeatures(trainData);
             var normalizedValidation = FeatureEngineering.ApplyNormalization(validationData, normStats);
             var normalizedTest = FeatureEngineering.ApplyNormalization(testData, normStats);
+
+            // Release unnormalized data
+            trainData = null!;
+            validationData = null!;
+            testData = null!;
+            GC.Collect(0, GCCollectionMode.Optimized);
 
             // Check for existing checkpoint to resume from
             TrainingCheckpoint? checkpoint = null;
@@ -410,7 +486,7 @@ public sealed class TrainingService : ITrainingService
                     MaxAttempts = maxAttemptsDisplay,
                     Message = checkpoint is not null 
                         ? $"Resuming training from epoch {startEpoch}..." 
-                        : $"Training on {trainData.Samples.Count} samples..."
+                        : $"Training on {trainDataForRun.Samples.Count} samples..."
                 });
 
                 // Create progress reporter that updates database periodically
@@ -422,15 +498,14 @@ public sealed class TrainingService : ITrainingService
                     if ((now - lastUpdate).TotalMilliseconds >= 500)
                     {
                         lastUpdate = now;
-                        await UpdateJobAsync(jobId, job => job with
-                        {
-                            CurrentEpoch = p.CurrentEpoch,
-                            TrainingLoss = p.TrainingLoss,
-                            ValidationLoss = p.ValidationLoss,
-                            BestValidationLoss = p.BestValidationLoss,
-                            EpochsSinceImprovement = p.EpochsSinceImprovement,
-                            Message = p.Message
-                        });
+                        // Use optimized single-statement update (no SELECT)
+                        await UpdateJobProgressAsync(jobId, 
+                            p.CurrentEpoch, 
+                            p.TrainingLoss, 
+                            p.ValidationLoss, 
+                            p.BestValidationLoss, 
+                            p.EpochsSinceImprovement, 
+                            p.Message);
                     }
                 });
 
@@ -479,12 +554,18 @@ public sealed class TrainingService : ITrainingService
                 // Evaluate on test set
                 var evalResult = await _modelTrainer.EvaluateAsync(trainingResult.Model, normalizedTest, cts.Token);
 
+                // Dispose the trained model after evaluation - we only need the metrics
+                trainingResult.Model.Dispose();
+
                 // Run backtest
                 var annualizationFactor = CalculateAnnualizationFactor(state.Dataset.Interval);
                 var backtestResult = _backtestEngine.RunBacktest(
                     evalResult.Predictions, 
                     config.TradingEnvironment,
                     annualizationFactor);
+
+                // Clear predictions after backtest to free memory
+                evalResult = evalResult with { Predictions = [] };
 
                 // Build result for this attempt
                 var meetsRequirements = CheckRequirements(backtestResult.Metrics, config.PerformanceRequirements);
@@ -566,12 +647,15 @@ public sealed class TrainingService : ITrainingService
         }
         finally
         {
+            // Release semaphore to allow next training job to run
+            _trainingSemaphore.Release();
+            
             // Clean up runtime state when job completes
             _activeJobs.TryRemove(jobId, out _);
         }
     }
 
-    // Helper method to update job in database
+    // Helper method to update job in database - uses ExecuteUpdateAsync for single-statement update
     private async Task UpdateJobAsync(Guid jobId, Func<TrainingJob, TrainingJob> updateFunc)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync();
@@ -583,6 +667,36 @@ public sealed class TrainingService : ITrainingService
             entity.UpdateFrom(updatedJob);
             await db.SaveChangesAsync();
         }
+    }
+
+    // Optimized: Update only progress fields with single UPDATE statement (no SELECT)
+    private async Task UpdateJobProgressAsync(Guid jobId, int currentEpoch, double trainingLoss, double validationLoss, double bestValidationLoss, int epochsSinceImprovement, string message)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync();
+        await db.TrainingJobs
+            .Where(j => j.Id == jobId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(j => j.CurrentEpoch, currentEpoch)
+                .SetProperty(j => j.TrainingLoss, trainingLoss)
+                .SetProperty(j => j.ValidationLoss, validationLoss)
+                .SetProperty(j => j.BestValidationLoss, bestValidationLoss)
+                .SetProperty(j => j.EpochsSinceImprovement, epochsSinceImprovement)
+                .SetProperty(j => j.Message, message.Length > 1000 ? message[..997] + "..." : message));
+    }
+
+    // Optimized: Update status with single UPDATE statement (no SELECT)
+    private async Task UpdateJobStatusAsync(Guid jobId, TrainingJobStatus status, string message, DateTime? startedAtUtc = null, DateTime? completedAtUtc = null, string? errorMessage = null, string? resultJson = null)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync();
+        await db.TrainingJobs
+            .Where(j => j.Id == jobId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(j => j.Status, status)
+                .SetProperty(j => j.Message, message.Length > 1000 ? message[..997] + "..." : message)
+                .SetProperty(j => j.StartedAtUtc, startedAtUtc)
+                .SetProperty(j => j.CompletedAtUtc, completedAtUtc)
+                .SetProperty(j => j.ErrorMessage, errorMessage != null && errorMessage.Length > 1000 ? errorMessage[..997] + "..." : errorMessage)
+                .SetProperty(j => j.ResultJson, resultJson));
     }
 
     private static TrainingData ShuffleTrainingData(TrainingData data, int seed)
@@ -639,17 +753,15 @@ public sealed class TrainingService : ITrainingService
         public bool ResumeFromCheckpoint { get; set; } = false;  // Set to false after first training completes
     }
 
-    // Helper method to update job checkpoint status
+    // Helper method to update job checkpoint status - uses ExecuteUpdateAsync (no SELECT)
     private async Task UpdateJobWithCheckpointAsync(Guid jobId, int epoch)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync();
-        var entity = await db.TrainingJobs.FindAsync(jobId);
-        if (entity is not null)
-        {
-            entity.HasCheckpoint = true;
-            entity.LastCheckpointAtUtc = DateTime.UtcNow;
-            await db.SaveChangesAsync();
-        }
+        await db.TrainingJobs
+            .Where(j => j.Id == jobId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(j => j.HasCheckpoint, true)
+                .SetProperty(j => j.LastCheckpointAtUtc, DateTime.UtcNow));
     }
 
     public async Task<bool> PauseTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)

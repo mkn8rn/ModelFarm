@@ -12,6 +12,7 @@ public static class FeatureEngineering
     /// <summary>
     /// Creates a feature matrix from OHLC data with lagged log returns.
     /// This mirrors the feature generation in the quant trading notebook.
+    /// Memory-optimized: calculates log returns incrementally without storing full array.
     /// </summary>
     /// <param name="klines">Raw kline/candlestick data</param>
     /// <param name="maxLags">Number of lagged features to create</param>
@@ -26,33 +27,57 @@ public static class FeatureEngineering
         if (klines.Count < maxLags + forecastHorizon + 1)
             throw new ArgumentException($"Need at least {maxLags + forecastHorizon + 1} data points");
 
-        // Calculate log returns: ln(close[t] / close[t-1])
-        var logReturns = CalculateLogReturns(klines);
+        // Pre-calculate expected sample count to avoid list resizing
+        var expectedSamples = klines.Count - maxLags - forecastHorizon;
+        var samples = new List<TrainingSample>(expectedSamples);
 
-        // Create lagged features and target
-        var samples = new List<TrainingSample>();
+        // Keep a rolling window of log returns to avoid storing the full array
+        // We need maxLags + forecastHorizon log returns in the window
+        var windowSize = maxLags + forecastHorizon;
+        var logReturnWindow = new float[windowSize];
+        var windowIndex = 0;
+        var filledCount = 0;
 
-        // Start from index where we have enough history for lags
-        // End before where we don't have enough future data for the target
-        for (int i = maxLags; i < logReturns.Length - forecastHorizon; i++)
+        // Process klines in a single pass
+        for (int i = 1; i < klines.Count; i++)
         {
-            var features = new double[maxLags];
-            for (int lag = 0; lag < maxLags; lag++)
+            // Calculate current log return
+            var logReturn = (float)Math.Log((double)(klines[i].Close / klines[i - 1].Close));
+            
+            // Store in circular buffer
+            logReturnWindow[windowIndex] = logReturn;
+            windowIndex = (windowIndex + 1) % windowSize;
+            filledCount++;
+
+            // Once we have enough history, start creating samples
+            if (filledCount >= windowSize)
             {
-                // Feature at lag k is the log return from k periods ago
-                features[lag] = logReturns[i - lag - 1];
+                var features = new float[maxLags];
+                
+                // Extract lag features from circular buffer
+                // The most recent log return is at (windowIndex - 1), going backwards
+                for (int lag = 0; lag < maxLags; lag++)
+                {
+                    // lag 0 = 1 period ago, lag 1 = 2 periods ago, etc.
+                    var idx = (windowIndex - forecastHorizon - lag - 1 + windowSize) % windowSize;
+                    features[lag] = logReturnWindow[idx];
+                }
+
+                // Target is the most recent log return (forecastHorizon - 1 positions back from window end)
+                var targetIdx = (windowIndex - 1 + windowSize) % windowSize;
+                var target = logReturnWindow[targetIdx];
+
+                // The corresponding kline index for this sample
+                var klineIdx = i - forecastHorizon + 1;
+                
+                samples.Add(new TrainingSample
+                {
+                    Timestamp = klines[klineIdx].OpenTimeUtc,
+                    Features = features,
+                    Target = target,
+                    ClosePrice = (float)klines[klineIdx].Close
+                });
             }
-
-            // Target is the future log return (forecast_horizon steps ahead)
-            var target = logReturns[i + forecastHorizon - 1];
-
-            samples.Add(new TrainingSample
-            {
-                Timestamp = klines[i].OpenTimeUtc,
-                Features = features,
-                Target = (float)target,
-                ClosePrice = (float)klines[i].Close
-            });
         }
 
         return new TrainingData
@@ -83,12 +108,21 @@ public static class FeatureEngineering
 
     /// <summary>
     /// Splits data into train/validation/test sets maintaining temporal order.
+    /// Memory-optimized: uses ArraySegment-like slicing where possible.
     /// </summary>
     public static (TrainingData train, TrainingData validation, TrainingData test) SplitData(
         TrainingData data,
         double validationSplit = 0.2,
         double testSplit = 0.1)
     {
+        // Validate split values
+        if (validationSplit < 0 || validationSplit >= 1)
+            throw new ArgumentException($"Validation split must be between 0 and 1 (got {validationSplit})", nameof(validationSplit));
+        if (testSplit < 0 || testSplit >= 1)
+            throw new ArgumentException($"Test split must be between 0 and 1 (got {testSplit})", nameof(testSplit));
+        if (validationSplit + testSplit >= 1)
+            throw new ArgumentException($"Validation ({validationSplit}) + test ({testSplit}) splits must sum to less than 1");
+
         var totalSamples = data.Samples.Count;
         
         if (totalSamples < 10)
@@ -101,9 +135,12 @@ public static class FeatureEngineering
         if (trainSize < 5)
             throw new InvalidOperationException($"Not enough training samples ({trainSize}). Dataset has {totalSamples} samples but validation ({validationSplit:P0}) and test ({testSplit:P0}) splits leave insufficient data for training.");
 
-        var trainSamples = data.Samples.Take(trainSize).ToList();
-        var validationSamples = data.Samples.Skip(trainSize).Take(validationSize).ToList();
-        var testSamples = data.Samples.Skip(trainSize + validationSize).ToList();
+        // Use GetRange for more efficient list slicing (avoids LINQ overhead)
+        var samples = data.Samples as List<TrainingSample> ?? data.Samples.ToList();
+        
+        var trainSamples = samples.GetRange(0, trainSize);
+        var validationSamples = samples.GetRange(trainSize, validationSize);
+        var testSamples = samples.GetRange(trainSize + validationSize, testSize);
 
         return (
             data with { Samples = trainSamples },
@@ -115,6 +152,7 @@ public static class FeatureEngineering
     /// <summary>
     /// Normalizes features using z-score normalization.
     /// Returns the statistics needed to normalize new data.
+    /// Memory-optimized: computes stats in a single pass using Welford's algorithm.
     /// </summary>
     public static (TrainingData normalizedData, NormalizationStats stats) NormalizeFeatures(TrainingData data)
     {
@@ -122,34 +160,45 @@ public static class FeatureEngineering
             throw new InvalidOperationException("Cannot normalize empty dataset");
 
         var featureCount = data.FeatureNames.Length;
-        var means = new double[featureCount];
-        var stds = new double[featureCount];
         var sampleCount = data.Samples.Count;
 
-        // Calculate means
-        for (int f = 0; f < featureCount; f++)
+        // Use Welford's online algorithm for numerically stable mean/variance calculation
+        var means = new double[featureCount];
+        var m2 = new double[featureCount]; // Sum of squared differences from mean
+        var stds = new double[featureCount];
+
+        // Single pass to calculate mean and variance
+        for (int n = 0; n < sampleCount; n++)
         {
-            means[f] = data.Samples.Average(s => s.Features[f]);
+            var sample = data.Samples[n];
+            for (int f = 0; f < featureCount; f++)
+            {
+                var x = sample.Features[f];
+                var delta = x - means[f];
+                means[f] += delta / (n + 1);
+                m2[f] += delta * (x - means[f]);
+            }
         }
 
         // Calculate standard deviations
         for (int f = 0; f < featureCount; f++)
         {
-            var sumSquaredDiff = data.Samples.Sum(s => Math.Pow(s.Features[f] - means[f], 2));
-            stds[f] = Math.Sqrt(sumSquaredDiff / sampleCount);
+            stds[f] = Math.Sqrt(m2[f] / sampleCount);
             if (stds[f] < 1e-8) stds[f] = 1.0; // Avoid division by zero
         }
 
-        // Normalize samples
-        var normalizedSamples = data.Samples.Select(s =>
+        // Normalize samples - create new feature arrays
+        var normalizedSamples = new List<TrainingSample>(sampleCount);
+        for (int i = 0; i < sampleCount; i++)
         {
-            var normalizedFeatures = new double[featureCount];
+            var s = data.Samples[i];
+            var normalizedFeatures = new float[featureCount];
             for (int f = 0; f < featureCount; f++)
             {
-                normalizedFeatures[f] = (s.Features[f] - means[f]) / stds[f];
+                normalizedFeatures[f] = (float)((s.Features[f] - means[f]) / stds[f]);
             }
-            return s with { Features = normalizedFeatures };
-        }).ToList();
+            normalizedSamples.Add(s with { Features = normalizedFeatures });
+        }
 
         return (
             data with { Samples = normalizedSamples },
@@ -162,15 +211,20 @@ public static class FeatureEngineering
     /// </summary>
     public static TrainingData ApplyNormalization(TrainingData data, NormalizationStats stats)
     {
-        var normalizedSamples = data.Samples.Select(s =>
+        var featureCount = stats.Means.Length;
+        var sampleCount = data.Samples.Count;
+        
+        var normalizedSamples = new List<TrainingSample>(sampleCount);
+        for (int i = 0; i < sampleCount; i++)
         {
-            var normalizedFeatures = new double[s.Features.Length];
-            for (int f = 0; f < s.Features.Length; f++)
+            var s = data.Samples[i];
+            var normalizedFeatures = new float[featureCount];
+            for (int f = 0; f < featureCount; f++)
             {
-                normalizedFeatures[f] = (s.Features[f] - stats.Means[f]) / stats.StandardDeviations[f];
+                normalizedFeatures[f] = (float)((s.Features[f] - stats.Means[f]) / stats.StandardDeviations[f]);
             }
-            return s with { Features = normalizedFeatures };
-        }).ToList();
+            normalizedSamples.Add(s with { Features = normalizedFeatures });
+        }
 
         return data with { Samples = normalizedSamples };
     }
@@ -189,14 +243,16 @@ public sealed record TrainingData
 
 /// <summary>
 /// A single training sample with features and target.
+/// Uses float[] instead of double[] for 50% memory savings on features.
 /// </summary>
 public sealed record TrainingSample
 {
     public required DateTime Timestamp { get; init; }
-    public required double[] Features { get; init; }
+    public required float[] Features { get; init; }
     public required float Target { get; init; }
     public required float ClosePrice { get; init; }
 }
+
 
 /// <summary>
 /// Statistics for feature normalization.

@@ -21,7 +21,31 @@ public class JobsModel : PageModel
     [BindProperty]
     public string? JobName { get; set; }
 
+    [BindProperty]
+    public int MaxConcurrentJobs { get; set; }
+
     public void OnGet() { }
+
+    // ==================== Concurrency Settings ====================
+    public IActionResult OnGetConcurrencySettings()
+    {
+        return new JsonResult(new
+        {
+            maxConcurrent = _trainingService.GetMaxConcurrentJobs(),
+            runningCount = _trainingService.GetRunningJobCount()
+        });
+    }
+
+    public IActionResult OnPostSetConcurrency()
+    {
+        _trainingService.SetMaxConcurrentJobs(MaxConcurrentJobs);
+        return new JsonResult(new
+        {
+            success = true,
+            maxConcurrent = _trainingService.GetMaxConcurrentJobs(),
+            runningCount = _trainingService.GetRunningJobCount()
+        });
+    }
 
     // ==================== Configuration Endpoints ====================
     public async Task<IActionResult> OnGetConfigsAsync()

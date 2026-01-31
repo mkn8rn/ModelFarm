@@ -8,6 +8,28 @@
 
 <div class="row">
     <div class="col-md-4">
+        <!-- Concurrency Settings Card -->
+        <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Concurrency Settings</span>
+                <span class="badge bg-info" id="runningJobsBadge" data-bs-toggle="tooltip" title="Number of jobs currently running">0 running</span>
+            </div>
+            <div class="card-body">
+                <form id="concurrencyForm">
+                    <div class="mb-2">
+                        <label class="form-label" data-bs-toggle="tooltip" title="Maximum number of training jobs that can run simultaneously. Lower values reduce memory usage but increase queue wait times.">
+                            Max Concurrent Jobs
+                        </label>
+                        <div class="input-group input-group-sm">
+                            <input type="number" class="form-control" id="maxConcurrentJobs" min="1" value="1">
+                            <button type="submit" class="btn btn-outline-primary">Apply</button>
+                        </div>
+                        <small class="text-muted">Minimum: 1. Set based on your hardware capacity.</small>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         <div class="card">
             <div class="card-header">New Training Job</div>
             <div class="card-body">
@@ -167,6 +189,36 @@
             }).join('');
         if (currentValue) select.value = currentValue;
     }
+
+    // ==================== Concurrency Settings ====================
+    
+    async function loadConcurrencySettings() {
+        const res = await fetch('?handler=ConcurrencySettings');
+        const data = await res.json();
+        document.getElementById('maxConcurrentJobs').value = data.maxConcurrent;
+        updateRunningBadge(data.runningCount);
+    }
+
+    function updateRunningBadge(count) {
+        const badge = document.getElementById('runningJobsBadge');
+        badge.textContent = `${count} running`;
+        badge.className = count > 0 ? 'badge bg-success' : 'badge bg-secondary';
+    }
+
+    document.getElementById('concurrencyForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const maxJobs = parseInt(document.getElementById('maxConcurrentJobs').value);
+        
+        const form = new FormData();
+        form.append('MaxConcurrentJobs', maxJobs);
+        
+        const res = await postWithToken('?handler=SetConcurrency', form);
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById('maxConcurrentJobs').value = data.maxConcurrent;
+            updateRunningBadge(data.runningCount);
+        }
+    });
     
     async function loadJobs() {
         const res = await fetch('?handler=Jobs');
@@ -379,8 +431,12 @@
     // ==================== Init ====================
     loadConfigs();
     loadJobs();
+    loadConcurrencySettings();
     
     setInterval(loadConfigs, 10000);
+    
+    // Periodically refresh concurrency settings to show running job count
+    setInterval(loadConcurrencySettings, 2000);
     
     setInterval(() => {
         if (Object.keys(jobPollIntervals).length === 0) {

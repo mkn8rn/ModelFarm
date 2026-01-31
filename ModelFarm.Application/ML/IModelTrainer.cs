@@ -45,8 +45,9 @@ public interface IModelTrainer
 
 /// <summary>
 /// Interface for a trained model that can make predictions.
+/// Implements IDisposable to ensure proper cleanup of native resources (e.g., TorchSharp tensors).
 /// </summary>
-public interface ITrainedModel
+public interface ITrainedModel : IDisposable
 {
     /// <summary>
     /// Unique identifier for this model.
@@ -55,13 +56,15 @@ public interface ITrainedModel
 
     /// <summary>
     /// Predicts the target value for the given features.
+    /// Memory-optimized: accepts float[] directly to avoid double->float conversion.
     /// </summary>
-    float Predict(double[] features);
+    float Predict(float[] features);
 
     /// <summary>
     /// Predicts target values for multiple samples.
+    /// Memory-optimized: accepts float[] directly to avoid double->float conversion.
     /// </summary>
-    float[] PredictBatch(IReadOnlyList<double[]> features);
+    float[] PredictBatch(IReadOnlyList<float[]> features);
 
     /// <summary>
     /// Saves the model to a file.

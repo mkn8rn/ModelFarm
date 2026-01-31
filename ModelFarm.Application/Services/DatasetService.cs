@@ -136,26 +136,38 @@ public sealed class DatasetService : IDatasetService
         var startTimeMs = new DateTimeOffset(dataset.StartTimeUtc).ToUnixTimeMilliseconds();
         var endTimeMs = new DateTimeOffset(dataset.EndTimeUtc).ToUnixTimeMilliseconds();
 
-        var klineEntities = await db.Klines
+        // Use AsNoTracking to avoid EF change tracking overhead
+        // Stream directly to list with pre-allocated capacity
+        var query = db.Klines
+            .AsNoTracking()
             .Where(k => k.Exchange == dataset.Exchange
                 && k.Symbol == dataset.Symbol
                 && k.Interval == dataset.Interval
                 && k.OpenTime >= startTimeMs
                 && k.OpenTime <= endTimeMs)
-            .OrderBy(k => k.OpenTime)
-            .ToListAsync(cancellationToken);
+            .OrderBy(k => k.OpenTime);
 
-        return klineEntities.Select(e => new Kline
+        // Get count first to pre-allocate list
+        var count = await query.CountAsync(cancellationToken);
+        var klines = new List<Kline>(count);
+
+        // Stream entities and transform to Kline directly to minimize memory
+        await foreach (var e in query.AsAsyncEnumerable().WithCancellation(cancellationToken))
         {
-            OpenTime = e.OpenTime,
-            Open = e.Open,
-            High = e.High,
-            Low = e.Low,
-            Close = e.Close,
-            Volume = e.Volume,
-            CloseTime = e.CloseTime,
-            QuoteAssetVolume = e.QuoteAssetVolume,
-            NumberOfTrades = e.NumberOfTrades
-        }).ToList();
+            klines.Add(new Kline
+            {
+                OpenTime = e.OpenTime,
+                Open = e.Open,
+                High = e.High,
+                Low = e.Low,
+                Close = e.Close,
+                Volume = e.Volume,
+                CloseTime = e.CloseTime,
+                QuoteAssetVolume = e.QuoteAssetVolume,
+                NumberOfTrades = e.NumberOfTrades
+            });
+        }
+
+        return klines;
     }
 }

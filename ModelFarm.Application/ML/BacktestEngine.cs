@@ -7,9 +7,20 @@ namespace ModelFarm.Application.ML;
 /// Implements the strategy logic from the quant trading notebook:
 /// - Buy when predicted return > 0
 /// - Sell when predicted return < 0
+/// Memory-optimized: uses downsampled equity curve and bounded trade storage.
 /// </summary>
 public sealed class BacktestEngine
 {
+    /// <summary>
+    /// Maximum number of equity curve points to store (downsamples if exceeded).
+    /// </summary>
+    private const int MaxEquityCurvePoints = 1000;
+
+    /// <summary>
+    /// Maximum number of trades to store in the result.
+    /// </summary>
+    private const int MaxStoredTrades = 500;
+
     /// <summary>
     /// Runs a backtest using model predictions.
     /// </summary>
@@ -25,9 +36,18 @@ public sealed class BacktestEngine
         if (predictions.Count == 0)
             return CreateEmptyResult(config.InitialCapital);
 
+        // Calculate downsampling rate for equity curve
+        var sampleEveryN = Math.Max(1, predictions.Count / MaxEquityCurvePoints);
+        
         var trades = new List<Trade>();
-        var equityCurve = new List<EquityPoint>();
-        var dailyReturns = new List<double>();
+        var equityCurve = new List<EquityPoint>(Math.Min(predictions.Count, MaxEquityCurvePoints + 1));
+        
+        // Use running statistics for daily returns instead of storing all
+        double sumReturns = 0;
+        double sumSquaredReturns = 0;
+        double sumNegativeSquaredReturns = 0;
+        int returnCount = 0;
+        int negativeReturnCount = 0;
         decimal totalFees = 0;
 
         // Use taker fee rate for market orders (most common in algorithmic trading)
@@ -40,6 +60,7 @@ public sealed class BacktestEngine
         DateTime entryTime = default;
         double peakEquity = equity;
         double maxDrawdown = 0;
+        double prevEquity = equity;
 
         equityCurve.Add(new EquityPoint { Timestamp = predictions[0].Timestamp, Equity = equity });
 
@@ -62,16 +83,21 @@ public sealed class BacktestEngine
                     var pnl = -position * (currentPrice - entryPrice) - fee;
                     equity += pnl;
                     totalFees += (decimal)fee;
-                    trades.Add(new Trade
+                    
+                    // Only store trade if under limit
+                    if (trades.Count < MaxStoredTrades)
                     {
-                        EntryTime = entryTime,
-                        ExitTime = prediction.Timestamp,
-                        Direction = TradeDirection.Short,
-                        EntryPrice = entryPrice,
-                        ExitPrice = currentPrice,
-                        PnL = pnl,
-                        ReturnPercent = pnl / (Math.Abs(position) * entryPrice)
-                    });
+                        trades.Add(new Trade
+                        {
+                            EntryTime = entryTime,
+                            ExitTime = prediction.Timestamp,
+                            Direction = TradeDirection.Short,
+                            EntryPrice = entryPrice,
+                            ExitPrice = currentPrice,
+                            PnL = pnl,
+                            ReturnPercent = pnl / (Math.Abs(position) * entryPrice)
+                        });
+                    }
                 }
 
                 // Open long position
@@ -91,16 +117,21 @@ public sealed class BacktestEngine
                     var pnl = position * (currentPrice - entryPrice) - fee;
                     equity += pnl;
                     totalFees += (decimal)fee;
-                    trades.Add(new Trade
+                    
+                    // Only store trade if under limit
+                    if (trades.Count < MaxStoredTrades)
                     {
-                        EntryTime = entryTime,
-                        ExitTime = prediction.Timestamp,
-                        Direction = TradeDirection.Long,
-                        EntryPrice = entryPrice,
-                        ExitPrice = currentPrice,
-                        PnL = pnl,
-                        ReturnPercent = pnl / (position * entryPrice)
-                    });
+                        trades.Add(new Trade
+                        {
+                            EntryTime = entryTime,
+                            ExitTime = prediction.Timestamp,
+                            Direction = TradeDirection.Long,
+                            EntryPrice = entryPrice,
+                            ExitPrice = currentPrice,
+                            PnL = pnl,
+                            ReturnPercent = pnl / (position * entryPrice)
+                        });
+                    }
                 }
 
                 // Open short position only if allowed
@@ -126,7 +157,11 @@ public sealed class BacktestEngine
             else if (position < 0)
                 mtmEquity -= position * (currentPrice - entryPrice);
 
-            equityCurve.Add(new EquityPoint { Timestamp = prediction.Timestamp, Equity = mtmEquity });
+            // Downsample equity curve - only store every Nth point
+            if (i % sampleEveryN == 0 || i == predictions.Count - 1)
+            {
+                equityCurve.Add(new EquityPoint { Timestamp = prediction.Timestamp, Equity = mtmEquity });
+            }
 
             // Track peak and drawdown
             if (mtmEquity > peakEquity)
@@ -136,13 +171,21 @@ public sealed class BacktestEngine
             if (drawdown > maxDrawdown)
                 maxDrawdown = drawdown;
 
-            // Daily returns (approximation - treating each bar as a period)
-            if (i > 0)
+            // Running statistics for returns (instead of storing all returns)
+            if (i > 0 && prevEquity > 0)
             {
-                var prevEquity = equityCurve[^2].Equity;
-                if (prevEquity > 0)
-                    dailyReturns.Add((mtmEquity - prevEquity) / prevEquity);
+                var periodReturn = (mtmEquity - prevEquity) / prevEquity;
+                sumReturns += periodReturn;
+                sumSquaredReturns += periodReturn * periodReturn;
+                returnCount++;
+                
+                if (periodReturn < 0)
+                {
+                    sumNegativeSquaredReturns += periodReturn * periodReturn;
+                    negativeReturnCount++;
+                }
             }
+            prevEquity = mtmEquity;
         }
 
         // Close any remaining position
@@ -156,25 +199,30 @@ public sealed class BacktestEngine
             equity += finalPnl;
             totalFees += (decimal)fee;
 
-            trades.Add(new Trade
+            if (trades.Count < MaxStoredTrades)
             {
-                EntryTime = entryTime,
-                ExitTime = predictions[^1].Timestamp,
-                Direction = position > 0 ? TradeDirection.Long : TradeDirection.Short,
-                EntryPrice = entryPrice,
-                ExitPrice = finalPrice,
-                PnL = finalPnl,
-                ReturnPercent = finalPnl / (Math.Abs(position) * entryPrice)
-            });
+                trades.Add(new Trade
+                {
+                    EntryTime = entryTime,
+                    ExitTime = predictions[^1].Timestamp,
+                    Direction = position > 0 ? TradeDirection.Long : TradeDirection.Short,
+                    EntryPrice = entryPrice,
+                    ExitPrice = finalPrice,
+                    PnL = finalPnl,
+                    ReturnPercent = finalPnl / (Math.Abs(position) * entryPrice)
+                });
+            }
         }
 
-        // Calculate final metrics
+        // Calculate final metrics using running statistics
         var totalReturn = (equity - (double)config.InitialCapital) / (double)config.InitialCapital;
         var periodCount = predictions.Count;
         var annualizedReturn = Math.Pow(1 + totalReturn, annualizationFactor / periodCount) - 1;
 
-        // Sharpe and Sortino ratios
-        var (sharpe, sortino) = CalculateRiskAdjustedReturns(dailyReturns, annualizationFactor);
+        // Sharpe and Sortino ratios from running statistics
+        var (sharpe, sortino) = CalculateRiskAdjustedReturnsFromStats(
+            sumReturns, sumSquaredReturns, sumNegativeSquaredReturns, 
+            returnCount, negativeReturnCount, annualizationFactor);
 
         // Win/loss statistics
         var winningTrades = trades.Where(t => t.PnL > 0).ToList();
@@ -229,23 +277,28 @@ public sealed class BacktestEngine
         };
     }
 
-    private static (double sharpe, double sortino) CalculateRiskAdjustedReturns(
-        List<double> returns,
+    /// <summary>
+    /// Calculates risk-adjusted returns from running statistics (memory efficient).
+    /// </summary>
+    private static (double sharpe, double sortino) CalculateRiskAdjustedReturnsFromStats(
+        double sumReturns,
+        double sumSquaredReturns,
+        double sumNegativeSquaredReturns,
+        int count,
+        int negativeCount,
         double annualizationFactor)
     {
-        if (returns.Count < 2)
+        if (count < 2)
             return (0, 0);
 
-        var meanReturn = returns.Average();
-        var variance = returns.Sum(r => Math.Pow(r - meanReturn, 2)) / (returns.Count - 1);
-        var stdDev = Math.Sqrt(variance);
+        var meanReturn = sumReturns / count;
+        var variance = (sumSquaredReturns / count) - (meanReturn * meanReturn);
+        var stdDev = Math.Sqrt(Math.Max(0, variance));
 
         // Downside deviation (for Sortino)
-        var downsideReturns = returns.Where(r => r < 0).ToList();
-        var downsideVariance = downsideReturns.Count > 0
-            ? downsideReturns.Sum(r => Math.Pow(r, 2)) / downsideReturns.Count
+        var downsideDev = negativeCount > 0 
+            ? Math.Sqrt(sumNegativeSquaredReturns / negativeCount) 
             : 0;
-        var downsideDev = Math.Sqrt(downsideVariance);
 
         // Annualize
         var annualizedMean = meanReturn * annualizationFactor;

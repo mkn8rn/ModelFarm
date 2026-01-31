@@ -80,6 +80,24 @@ public interface ITrainingService
     /// Gets training jobs for a specific configuration.
     /// </summary>
     Task<IReadOnlyList<TrainingJob>> GetJobsForConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default);
+
+    // ==================== Concurrency Settings ====================
+
+    /// <summary>
+    /// Gets the current maximum number of concurrent training jobs.
+    /// </summary>
+    int GetMaxConcurrentJobs();
+
+    /// <summary>
+    /// Sets the maximum number of concurrent training jobs.
+    /// </summary>
+    /// <param name="maxConcurrent">The maximum number (minimum 1).</param>
+    void SetMaxConcurrentJobs(int maxConcurrent);
+
+    /// <summary>
+    /// Gets the number of training jobs currently running.
+    /// </summary>
+    int GetRunningJobCount();
 }
 
 /// <summary>

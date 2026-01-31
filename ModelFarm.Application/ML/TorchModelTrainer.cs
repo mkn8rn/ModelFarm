@@ -137,8 +137,12 @@ public sealed class TorchModelTrainer : IModelTrainer
 
         sw.Stop();
 
-        // Use best model if available
+        // Use best model if available, dispose the unused one
         var finalModel = bestModelState ?? model;
+        if (bestModelState is not null && bestModelState != model)
+        {
+            model.Dispose();
+        }
 
         var trainedModel = new TorchTrainedModel(
             Guid.NewGuid(),
@@ -348,8 +352,12 @@ public sealed class TorchModelTrainer : IModelTrainer
 
         sw.Stop();
 
-        // Use best model if available
+        // Use best model if available, dispose the unused one
         var finalModel = bestModelState ?? model;
+        if (bestModelState is not null && bestModelState != model)
+        {
+            model.Dispose();
+        }
 
         var trainedModel = new TorchTrainedModel(
             Guid.NewGuid(),
@@ -381,31 +389,50 @@ public sealed class TorchModelTrainer : IModelTrainer
         TrainingData testData,
         CancellationToken cancellationToken = default)
     {
-        var predictions = new List<PredictionResult>();
-        var actualValues = new List<float>();
-        var predictedValues = new List<float>();
+        var sampleCount = testData.Samples.Count;
+        var predictions = new List<PredictionResult>(sampleCount);
+        
+        // Running statistics for metrics calculation (avoids storing separate lists)
+        double sumSquaredError = 0;
+        double sumAbsoluteError = 0;
+        double sumActual = 0;
+        double sumActualSquared = 0;
+        double sumPredicted = 0;
+        double sumPredictedSquared = 0;
+        double sumActualPredicted = 0;
 
         foreach (var sample in testData.Samples)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var predicted = model.Predict(sample.Features);
+            var actual = sample.Target;
+            
             predictions.Add(new PredictionResult
             {
                 Timestamp = sample.Timestamp,
-                Actual = sample.Target,
+                Actual = actual,
                 Predicted = predicted,
                 ClosePrice = sample.ClosePrice
             });
-            actualValues.Add(sample.Target);
-            predictedValues.Add(predicted);
+            
+            // Update running statistics
+            var error = actual - predicted;
+            sumSquaredError += error * error;
+            sumAbsoluteError += Math.Abs(error);
+            sumActual += actual;
+            sumActualSquared += actual * actual;
         }
 
-        // Calculate metrics
-        var mse = CalculateMSE(actualValues, predictedValues);
+        // Calculate metrics from running statistics
+        var mse = sumSquaredError / sampleCount;
         var rmse = Math.Sqrt(mse);
-        var mae = CalculateMAE(actualValues, predictedValues);
-        var rSquared = CalculateRSquared(actualValues, predictedValues);
+        var mae = sumAbsoluteError / sampleCount;
+        
+        // R-squared using running stats
+        var meanActual = sumActual / sampleCount;
+        var ssTot = sumActualSquared - (sumActual * sumActual / sampleCount);
+        var rSquared = ssTot > 0 ? 1 - (sumSquaredError / ssTot) : 0;
 
         return Task.FromResult(new ModelEvaluationResult
         {
@@ -422,25 +449,39 @@ public sealed class TorchModelTrainer : IModelTrainer
         var featureCount = data.FeatureNames.Length;
         var sampleCount = data.Samples.Count;
 
+        // Pre-allocate arrays
         var featuresArray = new float[sampleCount * featureCount];
         var targetsArray = new float[sampleCount];
 
+        // Copy features directly - now that Features is float[], we can use BlockCopy for speed
         for (int i = 0; i < sampleCount; i++)
         {
             var sample = data.Samples[i];
-            for (int j = 0; j < featureCount; j++)
-            {
-                featuresArray[i * featureCount + j] = (float)sample.Features[j];
-            }
+            Buffer.BlockCopy(sample.Features, 0, featuresArray, i * featureCount * sizeof(float), featureCount * sizeof(float));
             targetsArray[i] = sample.Target;
         }
 
-        var features = torch.tensor(featuresArray, dtype: ScalarType.Float32)
-            .reshape(sampleCount, featureCount)
-            .to(_device);
-        var targets = torch.tensor(targetsArray, dtype: ScalarType.Float32)
-            .reshape(sampleCount, 1)
-            .to(_device);
+        // Create tensors on CPU first, then move to device
+        // This is more memory efficient than creating directly on GPU
+        var featuresTensor = torch.tensor(featuresArray, dtype: ScalarType.Float32)
+            .reshape(sampleCount, featureCount);
+        var targetsTensor = torch.tensor(targetsArray, dtype: ScalarType.Float32)
+            .reshape(sampleCount, 1);
+
+        // Clear managed arrays to help GC
+        Array.Clear(featuresArray);
+        Array.Clear(targetsArray);
+
+        // Move to device (GPU if available)
+        var features = featuresTensor.to(_device);
+        var targets = targetsTensor.to(_device);
+
+        // Dispose CPU tensors if we moved to GPU
+        if (_device.type != DeviceType.CPU)
+        {
+            featuresTensor.Dispose();
+            targetsTensor.Dispose();
+        }
 
         return (features, targets);
     }
@@ -455,6 +496,7 @@ public sealed class TorchModelTrainer : IModelTrainer
             _ => new LinearRegressionModel(featureCount)
         };
         
+        
         // Move model to the selected device (GPU if available)
         model.to(_device);
         return model;
@@ -465,39 +507,6 @@ public sealed class TorchModelTrainer : IModelTrainer
         var clone = CreateModel(modelType, featureCount, config);
         clone.load_state_dict(source.state_dict());
         return clone;
-    }
-
-    private static double CalculateMSE(List<float> actual, List<float> predicted)
-    {
-        var sum = 0.0;
-        for (int i = 0; i < actual.Count; i++)
-        {
-            sum += Math.Pow(actual[i] - predicted[i], 2);
-        }
-        return sum / actual.Count;
-    }
-
-    private static double CalculateMAE(List<float> actual, List<float> predicted)
-    {
-        var sum = 0.0;
-        for (int i = 0; i < actual.Count; i++)
-        {
-            sum += Math.Abs(actual[i] - predicted[i]);
-        }
-        return sum / actual.Count;
-    }
-
-    private static double CalculateRSquared(List<float> actual, List<float> predicted)
-    {
-        var meanActual = actual.Average();
-        var ssRes = 0.0;
-        var ssTot = 0.0;
-        for (int i = 0; i < actual.Count; i++)
-        {
-            ssRes += Math.Pow(actual[i] - predicted[i], 2);
-            ssTot += Math.Pow(actual[i] - meanActual, 2);
-        }
-        return ssTot > 0 ? 1 - (ssRes / ssTot) : 0;
     }
 }
 
@@ -612,17 +621,16 @@ internal sealed class TorchTrainedModel : ITrainedModel
         _model.eval();
     }
 
-    public float Predict(double[] features)
+    public float Predict(float[] features)
     {
         using var _ = torch.no_grad();
-        var featureArray = features.Select(f => (float)f).ToArray();
-        using var input = torch.tensor(featureArray, dtype: ScalarType.Float32)
+        using var input = torch.tensor(features, dtype: ScalarType.Float32)
             .reshape(1, features.Length);
         using var output = _model.forward(input);
         return output.item<float>();
     }
 
-    public float[] PredictBatch(IReadOnlyList<double[]> features)
+    public float[] PredictBatch(IReadOnlyList<float[]> features)
     {
         using var _ = torch.no_grad();
         var featureCount = features[0].Length;
@@ -631,10 +639,7 @@ internal sealed class TorchTrainedModel : ITrainedModel
         var flatArray = new float[sampleCount * featureCount];
         for (int i = 0; i < sampleCount; i++)
         {
-            for (int j = 0; j < featureCount; j++)
-            {
-                flatArray[i * featureCount + j] = (float)features[i][j];
-            }
+            Buffer.BlockCopy(features[i], 0, flatArray, i * featureCount * sizeof(float), featureCount * sizeof(float));
         }
 
         using var input = torch.tensor(flatArray, dtype: ScalarType.Float32)
@@ -644,6 +649,10 @@ internal sealed class TorchTrainedModel : ITrainedModel
         var result = new float[sampleCount];
         var outputData = output.data<float>().ToArray();
         Array.Copy(outputData, result, sampleCount);
+        
+        // Clear flatArray to help GC
+        Array.Clear(flatArray);
+        
         return result;
     }
 
@@ -670,5 +679,10 @@ internal sealed class TorchTrainedModel : ITrainedModel
             EpochsTrained = 0,
             BestValidationLoss = 0
         };
+    }
+
+    public void Dispose()
+    {
+        _model.Dispose();
     }
 }
