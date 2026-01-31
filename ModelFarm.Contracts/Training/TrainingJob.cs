@@ -14,64 +14,6 @@ public sealed record TrainingJobRequest
     /// Optional name override for this job.
     /// </summary>
     public string? JobName { get; init; }
-
-    /// <summary>
-    /// Optional hyperparameter overrides for this run.
-    /// </summary>
-    public HyperparameterOverrides? Overrides { get; init; }
-
-    /// <summary>
-    /// Execution options for the training job.
-    /// </summary>
-    public TrainingExecutionOptions ExecutionOptions { get; init; } = new();
-}
-
-/// <summary>
-/// Options controlling how a training job executes.
-/// </summary>
-public sealed record TrainingExecutionOptions
-{
-    /// <summary>
-    /// If true, automatically retry training until performance requirements are met.
-    /// </summary>
-    public bool RetryUntilSuccess { get; init; } = false;
-
-    /// <summary>
-    /// Maximum number of retry attempts when RetryUntilSuccess is enabled.
-    /// </summary>
-    public int MaxRetryAttempts { get; init; } = 10;
-
-    /// <summary>
-    /// If true, use early stopping based on validation loss plateau.
-    /// </summary>
-    public bool UseEarlyStopping { get; init; } = true;
-
-    /// <summary>
-    /// If true, shuffle training data between retries to introduce variation.
-    /// </summary>
-    public bool ShuffleOnRetry { get; init; } = false;
-
-    /// <summary>
-    /// If true, adjust learning rate on retry (reduce by factor).
-    /// </summary>
-    public bool AdjustLearningRateOnRetry { get; init; } = false;
-
-    /// <summary>
-    /// Factor to multiply learning rate by on each retry (e.g., 0.5 to halve it).
-    /// </summary>
-    public double LearningRateRetryFactor { get; init; } = 0.5;
-}
-
-/// <summary>
-/// Hyperparameter overrides for a specific training run.
-/// </summary>
-public sealed record HyperparameterOverrides
-{
-    public double? LearningRate { get; init; }
-    public int? BatchSize { get; init; }
-    public int? MaxEpochs { get; init; }
-    public int? MaxLags { get; init; }
-    public double? DropoutRate { get; init; }
 }
 
 /// <summary>

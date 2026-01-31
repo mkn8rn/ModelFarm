@@ -41,7 +41,7 @@ public sealed class ApplicationDbContext : DbContext
             entity.Property(e => e.PerformanceRequirementsJson).HasMaxLength(2000);
             entity.Property(e => e.TradingEnvironmentJson).HasMaxLength(2000);
 
-            // Indexes for common queries
+            // Indexes for common queries 
             entity.HasIndex(e => e.DatasetId);
             entity.HasIndex(e => e.CreatedAtUtc);
         });
@@ -52,8 +52,6 @@ public sealed class ApplicationDbContext : DbContext
             entity.Property(e => e.Name).HasMaxLength(200);
             entity.Property(e => e.Message).HasMaxLength(1000);
             entity.Property(e => e.ErrorMessage).HasMaxLength(2000);
-            entity.Property(e => e.ExecutionOptionsJson).HasMaxLength(2000);
-            entity.Property(e => e.OverridesJson).HasMaxLength(2000);
 
             // Indexes for common queries
             entity.HasIndex(e => e.Status);

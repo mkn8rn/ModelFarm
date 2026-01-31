@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ModelFarm.Infrastructure.Persistence;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ModelFarm.Infrastructure.Persistence.Migrations.App
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260131081125_AddConfigCheckpointAndRetryFields")]
+    partial class AddConfigCheckpointAndRetryFields
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -235,10 +238,6 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
 
-                    b.Property<bool>("UseEarlyStopping")
-                        .HasColumnType("boolean")
-                        .HasColumnName("use_early_stopping");
-
                     b.Property<double>("ValidationSplit")
                         .HasColumnType("double precision")
                         .HasColumnName("validation_split");
@@ -303,6 +302,11 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                         .HasColumnType("character varying(2000)")
                         .HasColumnName("error_message");
 
+                    b.Property<string>("ExecutionOptionsJson")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("execution_options_json");
+
                     b.Property<bool>("HasCheckpoint")
                         .HasColumnType("boolean")
                         .HasColumnName("has_checkpoint");
@@ -330,6 +334,11 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)")
                         .HasColumnName("name");
+
+                    b.Property<string>("OverridesJson")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("overrides_json");
 
                     b.Property<string>("ResultJson")
                         .HasColumnType("text")

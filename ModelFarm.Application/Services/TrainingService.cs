@@ -52,9 +52,17 @@ public sealed class TrainingService : ITrainingService
             BatchSize = request.BatchSize,
             MaxEpochs = request.MaxEpochs,
             EarlyStoppingPatience = request.EarlyStoppingPatience,
+            UseEarlyStopping = request.UseEarlyStopping,
             ValidationSplit = request.ValidationSplit,
             TestSplit = request.TestSplit,
             RandomSeed = request.RandomSeed,
+            SaveCheckpoints = request.SaveCheckpoints,
+            CheckpointIntervalEpochs = request.CheckpointIntervalEpochs,
+            RetryUntilSuccess = request.RetryUntilSuccess,
+            MaxRetryAttempts = request.MaxRetryAttempts,
+            ShuffleOnRetry = request.ShuffleOnRetry,
+            ScaleLearningRateOnRetry = request.ScaleLearningRateOnRetry,
+            LearningRateRetryScale = request.LearningRateRetryScale,
             PerformanceRequirements = request.PerformanceRequirements,
             TradingEnvironment = request.TradingEnvironment,
             CreatedAtUtc = DateTime.UtcNow
@@ -84,6 +92,8 @@ public sealed class TrainingService : ITrainingService
         return entities.Select(e => e.ToConfiguration()).ToList();
     }
 
+
+
     public async Task<TrainingConfiguration> UpdateConfigurationAsync(Guid configurationId, UpdateTrainingConfigurationRequest request, CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
@@ -104,9 +114,17 @@ public sealed class TrainingService : ITrainingService
             BatchSize = request.BatchSize ?? existing.BatchSize,
             MaxEpochs = request.MaxEpochs ?? existing.MaxEpochs,
             EarlyStoppingPatience = request.EarlyStoppingPatience ?? existing.EarlyStoppingPatience,
+            UseEarlyStopping = request.UseEarlyStopping ?? existing.UseEarlyStopping,
             ValidationSplit = request.ValidationSplit ?? existing.ValidationSplit,
             TestSplit = request.TestSplit ?? existing.TestSplit,
             RandomSeed = request.RandomSeed ?? existing.RandomSeed,
+            SaveCheckpoints = request.SaveCheckpoints ?? existing.SaveCheckpoints,
+            CheckpointIntervalEpochs = request.CheckpointIntervalEpochs ?? existing.CheckpointIntervalEpochs,
+            RetryUntilSuccess = request.RetryUntilSuccess ?? existing.RetryUntilSuccess,
+            MaxRetryAttempts = request.MaxRetryAttempts ?? existing.MaxRetryAttempts,
+            ShuffleOnRetry = request.ShuffleOnRetry ?? existing.ShuffleOnRetry,
+            ScaleLearningRateOnRetry = request.ScaleLearningRateOnRetry ?? existing.ScaleLearningRateOnRetry,
+            LearningRateRetryScale = request.LearningRateRetryScale ?? existing.LearningRateRetryScale,
             PerformanceRequirements = request.PerformanceRequirements ?? existing.PerformanceRequirements,
             TradingEnvironment = request.TradingEnvironment ?? existing.TradingEnvironment,
             UpdatedAtUtc = DateTime.UtcNow
@@ -125,6 +143,7 @@ public sealed class TrainingService : ITrainingService
         if (entity is null)
             return false;
 
+
         db.TrainingConfigurations.Remove(entity);
         await db.SaveChangesAsync(cancellationToken);
         return true;
@@ -132,6 +151,8 @@ public sealed class TrainingService : ITrainingService
 
 
     // ==================== Training Job Management ====================
+
+
 
     public async Task<TrainingJob> StartTrainingAsync(TrainingJobRequest request, CancellationToken cancellationToken = default)
     {
@@ -154,9 +175,7 @@ public sealed class TrainingService : ITrainingService
             _ => TrainingJobStatus.Failed
         };
 
-        var maxAttempts = request.ExecutionOptions.RetryUntilSuccess 
-            ? request.ExecutionOptions.MaxRetryAttempts 
-            : 1;
+        var maxAttempts = config.RetryUntilSuccess ? config.MaxRetryAttempts : 1;
 
         var job = new TrainingJob
         {
@@ -177,7 +196,7 @@ public sealed class TrainingService : ITrainingService
         // Save job to database
         await using (var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
-            var entity = TrainingJobEntity.FromJob(job, request.ExecutionOptions, request.Overrides);
+            var entity = TrainingJobEntity.FromJob(job);
             db.TrainingJobs.Add(entity);
             await db.SaveChangesAsync(cancellationToken);
         }
@@ -188,8 +207,6 @@ public sealed class TrainingService : ITrainingService
             JobId = jobId,
             Configuration = config,
             Dataset = dataset,
-            Overrides = request.Overrides,
-            ExecutionOptions = request.ExecutionOptions,
             CancellationTokenSource = new CancellationTokenSource()
         };
 
@@ -218,6 +235,8 @@ public sealed class TrainingService : ITrainingService
                 return job with { IsPaused = runtimeState.IsPaused };
             }
         }
+
+
 
         // Fall back to database
         await using (var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken))
@@ -284,7 +303,6 @@ public sealed class TrainingService : ITrainingService
     private async Task RunTrainingAsync(TrainingJobRuntimeState state)
     {
         var config = state.Configuration;
-        var execOptions = state.ExecutionOptions;
         var cts = state.CancellationTokenSource;
         var jobId = state.JobId;
 
@@ -325,13 +343,9 @@ public sealed class TrainingService : ITrainingService
             var normalizedValidation = FeatureEngineering.ApplyNormalization(validationData, normStats);
             var normalizedTest = FeatureEngineering.ApplyNormalization(testData, normStats);
 
-
-            // Apply hyperparameter overrides to create effective config
-            var effectiveConfig = ApplyOverrides(config, state.Overrides);
-            
             // Check for existing checkpoint to resume from
             TrainingCheckpoint? checkpoint = null;
-            if (state.ResumeFromCheckpoint)
+            if (state.ResumeFromCheckpoint && config.SaveCheckpoints)
             {
                 checkpoint = await _checkpointManager.LoadCheckpointAsync(jobId, cts.Token);
                 if (checkpoint is not null)
@@ -346,6 +360,7 @@ public sealed class TrainingService : ITrainingService
             // Retry loop
             TrainingResult? finalResult = null;
             var totalTrainingDuration = checkpoint?.TotalTrainingDuration ?? TimeSpan.Zero;
+            var effectiveConfig = config;
             
             do
             {
@@ -358,12 +373,12 @@ public sealed class TrainingService : ITrainingService
                     await Task.Delay(500, cts.Token);
                 }
                 
-                // Adjust learning rate on retry if enabled
-                if (state.RetryAttempt > 1 && execOptions.AdjustLearningRateOnRetry)
+                // Scale learning rate on retry if enabled
+                if (state.RetryAttempt > 1 && config.ScaleLearningRateOnRetry)
                 {
                     effectiveConfig = effectiveConfig with
                     {
-                        LearningRate = effectiveConfig.LearningRate * execOptions.LearningRateRetryFactor
+                        LearningRate = effectiveConfig.LearningRate * config.LearningRateRetryScale
                     };
                     // Clear checkpoint since we're starting fresh with new LR
                     checkpoint = null;
@@ -371,21 +386,21 @@ public sealed class TrainingService : ITrainingService
 
                 // Shuffle training data on retry if enabled
                 var trainDataForRun = normalizedTrain;
-                if (state.RetryAttempt > 1 && execOptions.ShuffleOnRetry)
+                if (state.RetryAttempt > 1 && config.ShuffleOnRetry)
                 {
                     trainDataForRun = ShuffleTrainingData(normalizedTrain, state.RetryAttempt);
                     // Clear checkpoint since data order changed
                     checkpoint = null;
                 }
 
-                var maxAttempts = execOptions.RetryUntilSuccess ? execOptions.MaxRetryAttempts : 1;
+                var maxAttemptsDisplay = config.RetryUntilSuccess ? config.MaxRetryAttempts : 1;
                 var startEpoch = checkpoint?.Epoch ?? 0;
                 await UpdateJobAsync(jobId, job => job with
                 {
                     Status = TrainingJobStatus.Training,
                     CurrentEpoch = startEpoch,
                     CurrentAttempt = state.RetryAttempt,
-                    MaxAttempts = maxAttempts,
+                    MaxAttempts = maxAttemptsDisplay,
                     Message = checkpoint is not null 
                         ? $"Resuming training from epoch {startEpoch}..." 
                         : $"Training on {trainData.Samples.Count} samples..."
@@ -412,16 +427,18 @@ public sealed class TrainingService : ITrainingService
                     }
                 });
 
-                // Callback when checkpoint is saved
-                async Task OnCheckpointSaved(int epoch, double bestLoss)
-                {
-                    await UpdateJobWithCheckpointAsync(jobId, epoch);
-                }
+                // Callback when checkpoint is saved (only if checkpoints enabled)
+                Func<int, double, Task>? onCheckpointSaved = config.SaveCheckpoints
+                    ? async (epoch, bestLoss) => await UpdateJobWithCheckpointAsync(jobId, epoch)
+                    : null;
 
-                // Apply early stopping setting
-                var runConfig = execOptions.UseEarlyStopping 
+                // Apply early stopping setting from config
+                var runConfig = config.UseEarlyStopping 
                     ? effectiveConfig 
                     : effectiveConfig with { EarlyStoppingPatience = int.MaxValue };
+
+                // Determine checkpoint interval (0 = disabled)
+                var checkpointInterval = config.SaveCheckpoints ? config.CheckpointIntervalEpochs : 0;
 
                 // Train the model with checkpoint support
                 var trainingResult = await _modelTrainer.TrainWithCheckpointsAsync(
@@ -432,8 +449,9 @@ public sealed class TrainingService : ITrainingService
                     jobId,
                     checkpoint,
                     normStats,
+                    checkpointInterval,
                     progress,
-                    OnCheckpointSaved,
+                    onCheckpointSaved,
                     cts.Token);
 
                 // Clear checkpoint after first attempt so retries start fresh
@@ -473,17 +491,17 @@ public sealed class TrainingService : ITrainingService
                 };
 
                 // If meets requirements or retry not enabled, we're done
-                if (meetsRequirements || !execOptions.RetryUntilSuccess)
+                if (meetsRequirements || !config.RetryUntilSuccess)
                 {
                     break;
                 }
 
                 // Check if we've exhausted retries
-                if (state.RetryAttempt >= execOptions.MaxRetryAttempts)
+                if (state.RetryAttempt >= config.MaxRetryAttempts)
                 {
                     await UpdateJobAsync(jobId, job => job with
                     {
-                        Message = $"Max retries ({execOptions.MaxRetryAttempts}) reached without meeting requirements"
+                        Message = $"Max retries ({config.MaxRetryAttempts}) reached without meeting requirements"
                     });
                     break;
                 }
@@ -495,7 +513,7 @@ public sealed class TrainingService : ITrainingService
                 });
                 await Task.Delay(100, cts.Token);
 
-            } while (execOptions.RetryUntilSuccess && state.RetryAttempt < execOptions.MaxRetryAttempts);
+            } while (config.RetryUntilSuccess && state.RetryAttempt < config.MaxRetryAttempts);
 
             var completionMsg = finalResult!.MeetsRequirements 
                 ? $"Training completed - meets requirements" 
@@ -554,21 +572,6 @@ public sealed class TrainingService : ITrainingService
         }
     }
 
-    private static TrainingConfiguration ApplyOverrides(TrainingConfiguration config, HyperparameterOverrides? overrides)
-    {
-        if (overrides is null)
-            return config;
-
-        return config with
-        {
-            LearningRate = overrides.LearningRate ?? config.LearningRate,
-            BatchSize = overrides.BatchSize ?? config.BatchSize,
-            MaxEpochs = overrides.MaxEpochs ?? config.MaxEpochs,
-            MaxLags = overrides.MaxLags ?? config.MaxLags,
-            DropoutRate = overrides.DropoutRate ?? config.DropoutRate
-        };
-    }
-
     private static TrainingData ShuffleTrainingData(TrainingData data, int seed)
     {
         var rng = new Random(seed);
@@ -616,8 +619,6 @@ public sealed class TrainingService : ITrainingService
         public required Guid JobId { get; init; }
         public required TrainingConfiguration Configuration { get; init; }
         public required DatasetDefinition Dataset { get; init; }
-        public HyperparameterOverrides? Overrides { get; init; }
-        public TrainingExecutionOptions ExecutionOptions { get; init; } = new();
         public required CancellationTokenSource CancellationTokenSource { get; init; }
         public int RetryAttempt { get; set; } = 0;
         public bool IsPaused { get; set; } = false;
@@ -697,6 +698,7 @@ public sealed class TrainingService : ITrainingService
         if (config is null)
             return false;
 
+
         // Get dataset
         var dataset = await _datasetService.GetDatasetAsync(config.DatasetId, cancellationToken);
         if (dataset is null)
@@ -728,8 +730,6 @@ public sealed class TrainingService : ITrainingService
             JobId = jobId,
             Configuration = config,
             Dataset = dataset,
-            Overrides = entity.GetOverrides(),
-            ExecutionOptions = entity.GetExecutionOptions(),
             CancellationTokenSource = new CancellationTokenSource(),
             ResumeFromCheckpoint = false
         };
@@ -778,14 +778,13 @@ public sealed class TrainingService : ITrainingService
         entity.CompletedAtUtc = null;
         await db.SaveChangesAsync(cancellationToken);
 
+
         // Create runtime state with resume flag
         var runtimeState = new TrainingJobRuntimeState
         {
             JobId = jobId,
             Configuration = config,
             Dataset = dataset,
-            Overrides = entity.GetOverrides(),
-            ExecutionOptions = entity.GetExecutionOptions(),
             CancellationTokenSource = new CancellationTokenSource(),
             ResumeFromCheckpoint = true
         };

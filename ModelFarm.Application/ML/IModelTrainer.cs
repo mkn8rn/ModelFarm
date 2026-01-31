@@ -28,6 +28,7 @@ public interface IModelTrainer
         Guid jobId,
         TrainingCheckpoint? resumeFromCheckpoint,
         NormalizationStats normStats,
+        int checkpointIntervalEpochs,
         IProgress<TrainingProgress>? progress = null,
         Func<int, double, Task>? onCheckpointSaved = null,
         CancellationToken cancellationToken = default);

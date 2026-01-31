@@ -32,19 +32,12 @@ public sealed class TrainingJobEntity
     public DateTime? StartedAtUtc { get; set; }
     public DateTime? CompletedAtUtc { get; set; }
 
-    // Execution options (stored as JSON)
-    public string? ExecutionOptionsJson { get; set; }
-
-    // Hyperparameter overrides (stored as JSON)
-    public string? OverridesJson { get; set; }
-
     // Result (stored as JSON)
     public string? ResultJson { get; set; }
 
     // Checkpoint tracking
     public bool HasCheckpoint { get; set; } = false;
     public DateTime? LastCheckpointAtUtc { get; set; }
-
 
     // Accumulated training duration (for resume)
     public long AccumulatedTrainingTicks { get; set; } = 0;
@@ -73,20 +66,7 @@ public sealed class TrainingJobEntity
         HasCheckpoint = HasCheckpoint
     };
 
-    public TrainingExecutionOptions GetExecutionOptions() =>
-        ExecutionOptionsJson != null
-            ? JsonSerializer.Deserialize<TrainingExecutionOptions>(ExecutionOptionsJson) ?? new()
-            : new();
-
-    public HyperparameterOverrides? GetOverrides() =>
-        OverridesJson != null
-            ? JsonSerializer.Deserialize<HyperparameterOverrides>(OverridesJson)
-            : null;
-
-    public static TrainingJobEntity FromJob(
-        TrainingJob job,
-        TrainingExecutionOptions? executionOptions = null,
-        HyperparameterOverrides? overrides = null) => new()
+    public static TrainingJobEntity FromJob(TrainingJob job) => new()
     {
         Id = job.Id,
         Name = job.Name,
@@ -106,8 +86,6 @@ public sealed class TrainingJobEntity
         CreatedAtUtc = job.CreatedAtUtc,
         StartedAtUtc = job.StartedAtUtc,
         CompletedAtUtc = job.CompletedAtUtc,
-        ExecutionOptionsJson = executionOptions != null ? JsonSerializer.Serialize(executionOptions) : null,
-        OverridesJson = overrides != null ? JsonSerializer.Serialize(overrides) : null,
         ResultJson = job.Result != null ? JsonSerializer.Serialize(job.Result) : null
     };
 

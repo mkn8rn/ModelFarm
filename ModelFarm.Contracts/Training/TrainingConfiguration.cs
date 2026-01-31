@@ -88,6 +88,12 @@ public sealed record TrainingConfiguration
     public int EarlyStoppingPatience { get; init; } = 50;
 
     /// <summary>
+    /// If true, use early stopping based on validation loss plateau.
+    /// If false, training runs for MaxEpochs regardless of validation loss.
+    /// </summary>
+    public bool UseEarlyStopping { get; init; } = true;
+
+    /// <summary>
     /// Fraction of data to use for validation (0.0 to 1.0).
     /// </summary>
     public double ValidationSplit { get; init; } = 0.2;
@@ -101,6 +107,47 @@ public sealed record TrainingConfiguration
     /// Random seed for reproducibility.
     /// </summary>
     public int RandomSeed { get; init; } = 42;
+
+    // ==================== Checkpoint Settings ====================
+
+    /// <summary>
+    /// If true, save model checkpoints during training for recovery after interruption.
+    /// </summary>
+    public bool SaveCheckpoints { get; init; } = true;
+
+    /// <summary>
+    /// Number of epochs between checkpoint saves. Only used if SaveCheckpoints is true.
+    /// </summary>
+    public int CheckpointIntervalEpochs { get; init; } = 50;
+
+    // ==================== Retry Settings ====================
+
+    /// <summary>
+    /// If true, automatically retry training until performance requirements are met.
+    /// </summary>
+    public bool RetryUntilSuccess { get; init; } = false;
+
+    /// <summary>
+    /// Maximum number of retry attempts when RetryUntilSuccess is enabled.
+    /// </summary>
+    public int MaxRetryAttempts { get; init; } = 10;
+
+    /// <summary>
+    /// If true, shuffle training data between retries to introduce variation.
+    /// </summary>
+    public bool ShuffleOnRetry { get; init; } = false;
+
+    /// <summary>
+    /// If true, scale the learning rate on each retry attempt.
+    /// </summary>
+    public bool ScaleLearningRateOnRetry { get; init; } = false;
+
+    /// <summary>
+    /// Factor to multiply learning rate by on each retry.
+    /// Values less than 1.0 decrease LR (e.g., 0.5 halves it).
+    /// Values greater than 1.0 increase LR (e.g., 1.5 increases by 50%).
+    /// </summary>
+    public double LearningRateRetryScale { get; init; } = 0.5;
 
     // ==================== Performance Requirements ====================
 

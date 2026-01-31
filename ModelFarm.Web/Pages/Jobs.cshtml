@@ -23,53 +23,9 @@
                         <input type="text" class="form-control form-control-sm" id="jobName" placeholder="Auto-generated if empty">
                     </div>
 
-                    <hr class="my-2">
-                    <small class="text-muted">Execution Options</small>
-
-                    <div class="form-check mt-2">
-                        <input class="form-check-input" type="checkbox" id="jobEarlyStopping" checked>
-                        <label class="form-check-label small" for="jobEarlyStopping" 
-                               data-bs-toggle="tooltip" data-bs-placement="right"
-                               title="Automatically stops training when validation loss stops improving for a specified number of epochs (patience). This prevents overfitting and saves time by not training longer than necessary. Recommended to keep enabled.">
-                            Use early stopping
-                        </label>
-                    </div>
-
-                    <div class="form-check mt-1">
-                        <input class="form-check-input" type="checkbox" id="jobRetryUntilSuccess">
-                        <label class="form-check-label small" for="jobRetryUntilSuccess"
-                               data-bs-toggle="tooltip" data-bs-placement="right"
-                               title="If enabled, training will automatically restart with different conditions when the model fails to meet the performance requirements (Min Sharpe, Max Drawdown, etc.). Training continues until requirements are met or max retries is reached.">
-                            Retry until requirements met
-                        </label>
-                    </div>
-
-                    <div id="retryOptions" class="ms-4 mt-1" style="display: none;">
-                        <div class="mb-2">
-                            <label class="form-label small" 
-                                   data-bs-toggle="tooltip" data-bs-placement="right"
-                                   title="Maximum number of training attempts before giving up. Each retry uses different random initialization or shuffled data to find a better solution.">
-                                Max Retries
-                            </label>
-                            <input type="number" class="form-control form-control-sm" id="jobMaxRetries" value="10">
-                        </div>
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="jobShuffleOnRetry">
-                            <label class="form-check-label small" for="jobShuffleOnRetry"
-                                   data-bs-toggle="tooltip" data-bs-placement="right"
-                                   title="Randomizes the order of training samples between retry attempts. This can help the model escape local minima and find better solutions by presenting data in a different sequence.">
-                                Shuffle data on retry
-                            </label>
-                        </div>
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="jobAdjustLR">
-                            <label class="form-check-label small" for="jobAdjustLR"
-                                   data-bs-toggle="tooltip" data-bs-placement="right"
-                                   title="Reduces the learning rate by 50% on each retry attempt. Lower learning rates can help the model converge more precisely, though training may take longer. Useful when the model oscillates or fails to stabilize.">
-                                Reduce learning rate on retry
-                            </label>
-                        </div>
-                    </div>
+                    <p class="text-muted small mt-2 mb-2">
+                        <i class="bi bi-info-circle"></i> All training settings (early stopping, retry, checkpoints) are configured in the <a href="/Configurations">Configuration</a>.
+                    </p>
 
                     <button type="submit" class="btn btn-primary btn-sm w-100 mt-2">Start Training</button>
                 </form>
@@ -173,10 +129,6 @@
     }
 
     // ==================== Training Jobs ====================
-    document.getElementById('jobRetryUntilSuccess').addEventListener('change', function() {
-        document.getElementById('retryOptions').style.display = this.checked ? 'block' : 'none';
-    });
-    
     
     document.getElementById('jobForm').addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -192,12 +144,6 @@
         
         const jobName = document.getElementById('jobName').value;
         if (jobName) form.append('JobName', jobName);
-        
-        form.append('UseEarlyStopping', document.getElementById('jobEarlyStopping').checked);
-        form.append('RetryUntilSuccess', document.getElementById('jobRetryUntilSuccess').checked);
-        form.append('MaxRetryAttempts', document.getElementById('jobMaxRetries').value);
-        form.append('ShuffleOnRetry', document.getElementById('jobShuffleOnRetry').checked);
-        form.append('AdjustLearningRateOnRetry', document.getElementById('jobAdjustLR').checked);
         
         const res = await postWithToken('?handler=StartTraining', form);
         const data = await res.json();

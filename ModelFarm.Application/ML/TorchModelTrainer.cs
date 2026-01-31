@@ -162,12 +162,11 @@ public sealed class TorchModelTrainer : IModelTrainer
         Guid jobId,
         TrainingCheckpoint? resumeFromCheckpoint,
         NormalizationStats normStats,
+        int checkpointIntervalEpochs,
         IProgress<TrainingProgress>? progress = null,
         Func<int, double, Task>? onCheckpointSaved = null,
         CancellationToken cancellationToken = default)
     {
-        const int CheckpointIntervalEpochs = 50;
-
         var sw = Stopwatch.StartNew();
         var epochHistory = new List<EpochMetrics>();
         var featureCount = trainData.FeatureNames.Length;
@@ -290,8 +289,8 @@ public sealed class TorchModelTrainer : IModelTrainer
                 Message = $"Epoch {epoch}/{config.MaxEpochs} - Train Loss: {trainingLoss:F6}, Val Loss: {finalValidationLoss:F6}"
             });
 
-            // Save checkpoint periodically
-            if (epoch % CheckpointIntervalEpochs == 0)
+            // Save checkpoint periodically (if enabled)
+            if (checkpointIntervalEpochs > 0 && epoch % checkpointIntervalEpochs == 0)
             {
                 var checkpoint = new TrainingCheckpoint
                 {

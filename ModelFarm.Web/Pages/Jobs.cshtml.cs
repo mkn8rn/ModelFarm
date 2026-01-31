@@ -21,21 +21,6 @@ public class JobsModel : PageModel
     [BindProperty]
     public string? JobName { get; set; }
 
-    [BindProperty]
-    public bool UseEarlyStopping { get; set; } = true;
-
-    [BindProperty]
-    public bool RetryUntilSuccess { get; set; } = false;
-
-    [BindProperty]
-    public int MaxRetryAttempts { get; set; } = 10;
-
-    [BindProperty]
-    public bool ShuffleOnRetry { get; set; } = true;
-
-    [BindProperty]
-    public bool AdjustLearningRateOnRetry { get; set; } = false;
-
     public void OnGet() { }
 
     // ==================== Configuration Endpoints ====================
@@ -53,15 +38,7 @@ public class JobsModel : PageModel
             var request = new TrainingJobRequest
             {
                 ConfigurationId = ConfigurationId,
-                JobName = string.IsNullOrWhiteSpace(JobName) ? null : JobName,
-                ExecutionOptions = new TrainingExecutionOptions
-                {
-                    UseEarlyStopping = UseEarlyStopping,
-                    RetryUntilSuccess = RetryUntilSuccess,
-                    MaxRetryAttempts = MaxRetryAttempts,
-                    ShuffleOnRetry = ShuffleOnRetry,
-                    AdjustLearningRateOnRetry = AdjustLearningRateOnRetry
-                }
+                JobName = string.IsNullOrWhiteSpace(JobName) ? null : JobName
             };
 
             var job = await _trainingService.StartTrainingAsync(request);
@@ -78,6 +55,7 @@ public class JobsModel : PageModel
         var jobs = await _trainingService.GetAllTrainingJobsAsync();
         return new JsonResult(jobs);
     }
+
 
     public async Task<IActionResult> OnGetJobStatusAsync(Guid jobId)
     {

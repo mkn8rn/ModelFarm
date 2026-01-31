@@ -104,9 +104,21 @@ public sealed record CreateTrainingConfigurationRequest
     public int BatchSize { get; init; } = 32;
     public int MaxEpochs { get; init; } = 10000;
     public int EarlyStoppingPatience { get; init; } = 10;
+    public bool UseEarlyStopping { get; init; } = true;
     public double ValidationSplit { get; init; } = 0.2;
     public double TestSplit { get; init; } = 0.1;
     public int RandomSeed { get; init; } = 42;
+
+    // Checkpoint settings
+    public bool SaveCheckpoints { get; init; } = true;
+    public int CheckpointIntervalEpochs { get; init; } = 50;
+
+    // Retry settings
+    public bool RetryUntilSuccess { get; init; } = false;
+    public int MaxRetryAttempts { get; init; } = 10;
+    public bool ShuffleOnRetry { get; init; } = false;
+    public bool ScaleLearningRateOnRetry { get; init; } = false;
+    public double LearningRateRetryScale { get; init; } = 0.5;
 
     // Performance requirements
     public required PerformanceRequirements PerformanceRequirements { get; init; }
@@ -134,9 +146,21 @@ public sealed record UpdateTrainingConfigurationRequest
     public int? BatchSize { get; init; }
     public int? MaxEpochs { get; init; }
     public int? EarlyStoppingPatience { get; init; }
+    public bool? UseEarlyStopping { get; init; }
     public double? ValidationSplit { get; init; }
     public double? TestSplit { get; init; }
     public int? RandomSeed { get; init; }
+
+    // Checkpoint settings
+    public bool? SaveCheckpoints { get; init; }
+    public int? CheckpointIntervalEpochs { get; init; }
+
+    // Retry settings
+    public bool? RetryUntilSuccess { get; init; }
+    public int? MaxRetryAttempts { get; init; }
+    public bool? ShuffleOnRetry { get; init; }
+    public bool? ScaleLearningRateOnRetry { get; init; }
+    public double? LearningRateRetryScale { get; init; }
 
     // Performance requirements
     public PerformanceRequirements? PerformanceRequirements { get; init; }

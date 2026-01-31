@@ -27,9 +27,21 @@ public sealed class TrainingConfigurationEntity
     public int BatchSize { get; set; } = 32;
     public int MaxEpochs { get; set; } = 10000;
     public int EarlyStoppingPatience { get; set; } = 50;
+    public bool UseEarlyStopping { get; set; } = true;
     public double ValidationSplit { get; set; } = 0.2;
     public double TestSplit { get; set; } = 0.1;
     public int RandomSeed { get; set; } = 42;
+
+    // Checkpoint Settings
+    public bool SaveCheckpoints { get; set; } = true;
+    public int CheckpointIntervalEpochs { get; set; } = 50;
+
+    // Retry Settings
+    public bool RetryUntilSuccess { get; set; } = false;
+    public int MaxRetryAttempts { get; set; } = 10;
+    public bool ShuffleOnRetry { get; set; } = false;
+    public bool ScaleLearningRateOnRetry { get; set; } = false;
+    public double LearningRateRetryScale { get; set; } = 0.5;
 
     // Performance Requirements (stored as JSON)
     public required string PerformanceRequirementsJson { get; set; }
@@ -40,6 +52,7 @@ public sealed class TrainingConfigurationEntity
     // Metadata
     public required DateTime CreatedAtUtc { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
+
 
     public TrainingConfiguration ToConfiguration() => new()
     {
@@ -57,9 +70,17 @@ public sealed class TrainingConfigurationEntity
         BatchSize = BatchSize,
         MaxEpochs = MaxEpochs,
         EarlyStoppingPatience = EarlyStoppingPatience,
+        UseEarlyStopping = UseEarlyStopping,
         ValidationSplit = ValidationSplit,
         TestSplit = TestSplit,
         RandomSeed = RandomSeed,
+        SaveCheckpoints = SaveCheckpoints,
+        CheckpointIntervalEpochs = CheckpointIntervalEpochs,
+        RetryUntilSuccess = RetryUntilSuccess,
+        MaxRetryAttempts = MaxRetryAttempts,
+        ShuffleOnRetry = ShuffleOnRetry,
+        ScaleLearningRateOnRetry = ScaleLearningRateOnRetry,
+        LearningRateRetryScale = LearningRateRetryScale,
         PerformanceRequirements = JsonSerializer.Deserialize<PerformanceRequirements>(PerformanceRequirementsJson)!,
         TradingEnvironment = JsonSerializer.Deserialize<TradingEnvironmentConfig>(TradingEnvironmentJson)!,
         CreatedAtUtc = CreatedAtUtc,
@@ -82,9 +103,17 @@ public sealed class TrainingConfigurationEntity
         BatchSize = config.BatchSize,
         MaxEpochs = config.MaxEpochs,
         EarlyStoppingPatience = config.EarlyStoppingPatience,
+        UseEarlyStopping = config.UseEarlyStopping,
         ValidationSplit = config.ValidationSplit,
         TestSplit = config.TestSplit,
         RandomSeed = config.RandomSeed,
+        SaveCheckpoints = config.SaveCheckpoints,
+        CheckpointIntervalEpochs = config.CheckpointIntervalEpochs,
+        RetryUntilSuccess = config.RetryUntilSuccess,
+        MaxRetryAttempts = config.MaxRetryAttempts,
+        ShuffleOnRetry = config.ShuffleOnRetry,
+        ScaleLearningRateOnRetry = config.ScaleLearningRateOnRetry,
+        LearningRateRetryScale = config.LearningRateRetryScale,
         PerformanceRequirementsJson = JsonSerializer.Serialize(config.PerformanceRequirements),
         TradingEnvironmentJson = JsonSerializer.Serialize(config.TradingEnvironment),
         CreatedAtUtc = config.CreatedAtUtc,
@@ -103,9 +132,17 @@ public sealed class TrainingConfigurationEntity
         BatchSize = config.BatchSize;
         MaxEpochs = config.MaxEpochs;
         EarlyStoppingPatience = config.EarlyStoppingPatience;
+        UseEarlyStopping = config.UseEarlyStopping;
         ValidationSplit = config.ValidationSplit;
         TestSplit = config.TestSplit;
         RandomSeed = config.RandomSeed;
+        SaveCheckpoints = config.SaveCheckpoints;
+        CheckpointIntervalEpochs = config.CheckpointIntervalEpochs;
+        RetryUntilSuccess = config.RetryUntilSuccess;
+        MaxRetryAttempts = config.MaxRetryAttempts;
+        ShuffleOnRetry = config.ShuffleOnRetry;
+        ScaleLearningRateOnRetry = config.ScaleLearningRateOnRetry;
+        LearningRateRetryScale = config.LearningRateRetryScale;
         PerformanceRequirementsJson = JsonSerializer.Serialize(config.PerformanceRequirements);
         TradingEnvironmentJson = JsonSerializer.Serialize(config.TradingEnvironment);
         UpdatedAtUtc = config.UpdatedAtUtc;
