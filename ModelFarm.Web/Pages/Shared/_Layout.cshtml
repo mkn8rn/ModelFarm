@@ -47,6 +47,28 @@
                             </ul>
                         </li>
                     </ul>
+                    <ul class="navbar-nav">
+                        @if (User.Identity?.IsAuthenticated == true)
+                        {
+                            <li class="nav-item dropdown">
+                                <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                                    <i class="bi bi-person-circle me-1"></i>@User.Identity.Name
+                                </a>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><a class="dropdown-item" asp-page="/Account/Logout"><i class="bi bi-box-arrow-right me-2"></i>Logout</a></li>
+                                </ul>
+                            </li>
+                        }
+                        else
+                        {
+                            <li class="nav-item">
+                                <a class="nav-link" asp-page="/Account/Login"><i class="bi bi-box-arrow-in-right me-1"></i>Login</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" asp-page="/Account/Register"><i class="bi bi-person-plus me-1"></i>Register</a>
+                            </li>
+                        }
+                    </ul>
                 </div>
             </div>
         </nav>
