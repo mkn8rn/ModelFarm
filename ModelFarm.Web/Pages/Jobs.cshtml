@@ -135,6 +135,7 @@
 <script>
     let jobPollIntervals = {};
     let currentJobs = [];
+    let currentMaxConcurrent = 1;
     const csrfToken = '@Html.AntiForgeryToken()'.match(/value="([^"]+)"/)?.[1] || '';
 
     // Initialize Bootstrap tooltips
@@ -192,17 +193,22 @@
 
     // ==================== Concurrency Settings ====================
     
-    async function loadConcurrencySettings() {
+    async function loadConcurrencySettings(updateForm = true) {
         const res = await fetch('?handler=ConcurrencySettings');
         const data = await res.json();
-        document.getElementById('maxConcurrentJobs').value = data.maxConcurrent;
-        updateRunningBadge(data.runningCount);
+        currentMaxConcurrent = data.maxConcurrent;
+        if (updateForm) {
+            document.getElementById('maxConcurrentJobs').value = data.maxConcurrent;
+        }
+        updateRunningBadge();
     }
 
-    function updateRunningBadge(count) {
+    function updateRunningBadge() {
+        // Count only actually running jobs (status 1-4), not queued (status 0)
+        const actuallyRunning = currentJobs.filter(j => j.status >= 1 && j.status <= 4 && !j.isPaused).length;
         const badge = document.getElementById('runningJobsBadge');
-        badge.textContent = `${count} running`;
-        badge.className = count > 0 ? 'badge bg-success' : 'badge bg-secondary';
+        badge.textContent = `${actuallyRunning}/${currentMaxConcurrent} running`;
+        badge.className = actuallyRunning > 0 ? 'badge bg-success' : 'badge bg-secondary';
     }
 
     document.getElementById('concurrencyForm').addEventListener('submit', async (e) => {
@@ -216,7 +222,8 @@
         const data = await res.json();
         if (data.success) {
             document.getElementById('maxConcurrentJobs').value = data.maxConcurrent;
-            updateRunningBadge(data.runningCount);
+            currentMaxConcurrent = data.maxConcurrent;
+            updateRunningBadge();
         }
     });
     
@@ -224,6 +231,7 @@
         const res = await fetch('?handler=Jobs');
         const jobs = await res.json();
         currentJobs = jobs;
+        updateRunningBadge();
         const tbody = document.getElementById('jobsBody');
         tbody.innerHTML = jobs.map(j => {
             const isActive = j.status >= 0 && j.status <= 4;
@@ -435,8 +443,8 @@
     
     setInterval(loadConfigs, 10000);
     
-    // Periodically refresh concurrency settings to show running job count
-    setInterval(loadConcurrencySettings, 2000);
+    // Periodically refresh running job count badge only (don't overwrite form input)
+    setInterval(() => loadConcurrencySettings(false), 2000);
     
     setInterval(() => {
         if (Object.keys(jobPollIntervals).length === 0) {

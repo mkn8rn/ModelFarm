@@ -1,0 +1,112 @@
+@page
+@model ModelFarm.Web.Pages.Models.DownloadsModel
+@{
+    ViewData["Title"] = "Model Downloads";
+}
+
+<h4 class="mb-3">Model Downloads</h4>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-download me-2"></i>Trained Models</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadModels()">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>Job Name</th>
+                            <th>Configuration</th>
+                            <th>Model Type</th>
+                            <th>Trained On</th>
+                            <th>Test Loss</th>
+                            <th>Sharpe</th>
+                            <th>Status</th>
+                            <th style="width: 120px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="modelsBody">
+                        <tr>
+                            <td colspan="8" class="text-center text-muted py-3">Loading models...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-info-circle me-2"></i>About Model Files</div>
+            <div class="card-body">
+                <p class="mb-2">Downloaded model files are in <strong>TorchSharp (.pt)</strong> format and can be loaded using:</p>
+                <pre class="bg-light p-2 rounded"><code>var model = torch.nn.Module.Load&lt;YourModelType&gt;("model_best.pt");</code></pre>
+                <p class="mb-0 text-muted small">
+                    <i class="bi bi-lightbulb me-1"></i>
+                    Each download includes <code>model_best.pt</code> (best validation loss) and <code>checkpoint.json</code> (training metadata including normalization stats).
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    async function loadModels() {
+        const tbody = document.getElementById('modelsBody');
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">Loading models...</td></tr>';
+        
+        try {
+            const res = await fetch('?handler=CompletedJobs');
+            const jobs = await res.json();
+            
+            if (jobs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">No completed training jobs found. Train a model first.</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = jobs.map(j => {
+                const hasModel = j.hasModel;
+                const meetsReq = j.result?.meetsRequirements;
+                const statusBadge = meetsReq 
+                    ? '<span class="badge bg-success">Meets Requirements</span>'
+                    : '<span class="badge bg-warning">Below Requirements</span>';
+                
+                const downloadBtn = hasModel
+                    ? `<button class="btn btn-sm btn-primary" onclick="downloadModel('${j.id}')" title="Download model files">
+                         <i class="bi bi-download me-1"></i>Download
+                       </button>`
+                    : '<span class="text-muted small">No model file</span>';
+                
+                return `
+                <tr>
+                    <td>${j.name}</td>
+                    <td>${j.configName ?? '-'}</td>
+                    <td><span class="badge bg-secondary">${j.modelType ?? '-'}</span></td>
+                    <td>${j.completedAt ? new Date(j.completedAt).toLocaleDateString() : '-'}</td>
+                    <td>${j.result?.testLoss?.toFixed(6) ?? '-'}</td>
+                    <td>${j.result?.backtestMetrics?.sharpeRatio?.toFixed(3) ?? '-'}</td>
+                    <td>${statusBadge}</td>
+                    <td class="text-end">${downloadBtn}</td>
+                </tr>`;
+            }).join('');
+        } catch (e) {
+            console.error('Failed to load models:', e);
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger py-3">Failed to load models</td></tr>';
+        }
+    }
+    
+    function downloadModel(jobId) {
+        window.location.href = `?handler=DownloadModel&jobId=${jobId}`;
+    }
+    
+    // Initialize
+    loadModels();
+</script>
+}
