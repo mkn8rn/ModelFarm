@@ -205,8 +205,12 @@ public sealed class ModelTestingService : IModelTestingService
 
     public async Task<IReadOnlyList<ModelTest>> GetAllTestsAsync(CancellationToken cancellationToken = default)
     {
+        // Get IDs owned by current user
+        var ownedIds = await _userContext.GetOwnedResourceIdsAsync(ResourceTypes.ModelTest, cancellationToken);
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entities = await db.ModelTests
+            .Where(t => ownedIds.Contains(t.Id))
             .OrderByDescending(t => t.CreatedAtUtc)
             .ToListAsync(cancellationToken);
 
@@ -215,6 +219,10 @@ public sealed class ModelTestingService : IModelTestingService
 
     public async Task<ModelTest?> GetTestAsync(Guid testId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.ModelTest, testId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to model test {testId}");
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entity = await db.ModelTests.FindAsync([testId], cancellationToken);
         return entity?.ToModelTest();
@@ -222,6 +230,10 @@ public sealed class ModelTestingService : IModelTestingService
 
     public async Task<bool> DeleteTestAsync(Guid testId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.ModelTest, testId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to model test {testId}");
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entity = await db.ModelTests.FindAsync([testId], cancellationToken);
         if (entity is null)

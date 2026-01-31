@@ -67,6 +67,10 @@ public sealed class DatasetService : IDatasetService
 
     public async Task<DatasetDefinition?> GetDatasetAsync(Guid datasetId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.Dataset, datasetId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to dataset {datasetId}");
+
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
         var entity = await db.Datasets.FindAsync([datasetId], cancellationToken);
         return entity?.ToDefinition();
@@ -74,8 +78,12 @@ public sealed class DatasetService : IDatasetService
 
     public async Task<IReadOnlyList<DatasetDefinition>> GetAllDatasetsAsync(CancellationToken cancellationToken = default)
     {
+        // Get IDs owned by current user
+        var ownedIds = await _userContext.GetOwnedResourceIdsAsync(ResourceTypes.Dataset, cancellationToken);
+        
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
         var entities = await db.Datasets
+            .Where(d => ownedIds.Contains(d.Id))
             .OrderByDescending(d => d.CreatedAtUtc)
             .ToListAsync(cancellationToken);
         return entities.Select(e => e.ToDefinition()).ToList();
@@ -83,6 +91,10 @@ public sealed class DatasetService : IDatasetService
 
     public async Task<bool> DeleteDatasetAsync(Guid datasetId, bool deleteData = false, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.Dataset, datasetId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to dataset {datasetId}");
+
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
         var entity = await db.Datasets.FindAsync([datasetId], cancellationToken);
         
@@ -102,6 +114,10 @@ public sealed class DatasetService : IDatasetService
 
     public async Task<DatasetDefinition> RefreshDatasetStatusAsync(Guid datasetId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.Dataset, datasetId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to dataset {datasetId}");
+
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
         var entity = await db.Datasets.FindAsync([datasetId], cancellationToken);
 

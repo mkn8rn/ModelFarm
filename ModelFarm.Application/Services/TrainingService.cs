@@ -128,6 +128,10 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<TrainingConfiguration?> GetConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingConfiguration, configurationId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to configuration {configurationId}");
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entity = await db.TrainingConfigurations.FindAsync([configurationId], cancellationToken);
         return entity?.ToConfiguration();
@@ -135,8 +139,12 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<IReadOnlyList<TrainingConfiguration>> GetAllConfigurationsAsync(CancellationToken cancellationToken = default)
     {
+        // Get IDs owned by current user
+        var ownedIds = await _userContext.GetOwnedResourceIdsAsync(ResourceTypes.TrainingConfiguration, cancellationToken);
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entities = await db.TrainingConfigurations
+            .Where(c => ownedIds.Contains(c.Id))
             .OrderByDescending(c => c.CreatedAtUtc)
             .ToListAsync(cancellationToken);
         return entities.Select(e => e.ToConfiguration()).ToList();
@@ -146,6 +154,10 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<TrainingConfiguration> UpdateConfigurationAsync(Guid configurationId, UpdateTrainingConfigurationRequest request, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingConfiguration, configurationId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to configuration {configurationId}");
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entity = await db.TrainingConfigurations.FindAsync([configurationId], cancellationToken);
         if (entity is null)
@@ -188,6 +200,10 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<bool> DeleteConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingConfiguration, configurationId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to configuration {configurationId}");
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entity = await db.TrainingConfigurations.FindAsync([configurationId], cancellationToken);
         if (entity is null)
@@ -276,6 +292,10 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<TrainingJob?> GetTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingJob, jobId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to training job {jobId}");
+
         // Check active jobs first for most current state
         if (_activeJobs.TryGetValue(jobId, out var runtimeState))
         {
@@ -301,8 +321,12 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<IReadOnlyList<TrainingJob>> GetAllTrainingJobsAsync(TrainingJobStatus? statusFilter = null, CancellationToken cancellationToken = default)
     {
+        // Get IDs owned by current user
+        var ownedIds = await _userContext.GetOwnedResourceIdsAsync(ResourceTypes.TrainingJob, cancellationToken);
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var query = db.TrainingJobs.AsQueryable();
+        var query = db.TrainingJobs
+            .Where(j => ownedIds.Contains(j.Id));
         
         if (statusFilter.HasValue)
             query = query.Where(j => j.Status == statusFilter.Value);
@@ -323,6 +347,10 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<bool> CancelTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingJob, jobId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to training job {jobId}");
+
         // Cancel runtime if active
         if (_activeJobs.TryGetValue(jobId, out var runtimeState))
         {
@@ -345,9 +373,16 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<IReadOnlyList<TrainingJob>> GetJobsForConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership of the configuration
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingConfiguration, configurationId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to configuration {configurationId}");
+
+        // Get IDs of jobs owned by current user
+        var ownedJobIds = await _userContext.GetOwnedResourceIdsAsync(ResourceTypes.TrainingJob, cancellationToken);
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entities = await db.TrainingJobs
-            .Where(j => j.ConfigurationId == configurationId)
+            .Where(j => j.ConfigurationId == configurationId && ownedJobIds.Contains(j.Id))
             .OrderByDescending(j => j.CreatedAtUtc)
             .ToListAsync(cancellationToken);
         return entities.Select(e => e.ToJob()).ToList();
@@ -779,6 +814,10 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<bool> PauseTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingJob, jobId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to training job {jobId}");
+
         if (!_activeJobs.TryGetValue(jobId, out var runtimeState))
             return false;
 
@@ -801,6 +840,10 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<bool> ResumePausedJobAsync(Guid jobId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingJob, jobId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to training job {jobId}");
+
         if (!_activeJobs.TryGetValue(jobId, out var runtimeState))
             return false;
 
@@ -823,6 +866,10 @@ public sealed class TrainingService : ITrainingService
 
     public async Task<bool> RetryTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingJob, jobId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to training job {jobId}");
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entity = await db.TrainingJobs.FindAsync([jobId], cancellationToken);
         if (entity is null)
@@ -886,6 +933,10 @@ public sealed class TrainingService : ITrainingService
     /// </summary>
     public async Task<bool> ResumeTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
     {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingJob, jobId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to training job {jobId}");
+
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var entity = await db.TrainingJobs.FindAsync([jobId], cancellationToken);
         if (entity is null)
