@@ -6,40 +6,382 @@
 
 <h4 class="mb-3">Model Testing</h4>
 
-<div class="card">
-    <div class="card-body text-center py-5">
-        <i class="bi bi-play-circle fs-1 text-muted mb-3 d-block"></i>
-        <h5 class="text-muted">Coming Soon</h5>
-        <p class="text-muted mb-0">
-            This page will allow you to test trained models on new data, run paper trading simulations, 
-            and compare model performance across different market conditions.
-        </p>
+<div class="row">
+    <div class="col-md-4">
+        <div class="card mb-3">
+            <div class="card-header">Test Configuration</div>
+            <div class="card-body">
+                <form id="testForm">
+                    <div class="mb-3">
+                        <label class="form-label">Select Model</label>
+                        <select class="form-select form-select-sm" id="modelSelect" required>
+                            <option value="">Loading models...</option>
+                        </select>
+                        <small class="text-muted" id="modelInfo"></small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Select Dataset</label>
+                        <select class="form-select form-select-sm" id="datasetSelect" required>
+                            <option value="">Loading datasets...</option>
+                        </select>
+                        <small class="text-muted" id="datasetInfo"></small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Test Name (optional)</label>
+                        <input type="text" class="form-control form-control-sm" id="testName" placeholder="Auto-generated if empty">
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm w-100" id="runTestBtn">
+                        <i class="bi bi-play-fill me-1"></i>Run Test
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-list-check me-2"></i>Test Results</span>
+                <div>
+                    <span class="badge bg-secondary me-2" id="testCount">0 tests</span>
+                    <button class="btn btn-sm btn-outline-secondary me-1" onclick="loadTests()" title="Refresh">
+                        <i class="bi bi-arrow-clockwise"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="clearAllTests()" title="Clear all tests">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div id="noTestsPlaceholder" class="text-center py-5">
+                    <i class="bi bi-clipboard-data fs-1 text-muted mb-3 d-block"></i>
+                    <h6 class="text-muted">No Tests Yet</h6>
+                    <p class="text-muted small mb-0">Configure and run a test to see results here.</p>
+                </div>
+                <div id="testsList" class="accordion accordion-flush"></div>
+            </div>
+        </div>
     </div>
 </div>
 
-<div class="row mt-4">
-    <div class="col-md-4">
-        <div class="card h-100">
-            <div class="card-body">
-                <h6><i class="bi bi-lightning me-2"></i>Live Testing</h6>
-                <p class="small text-muted mb-0">Test models with real-time market data feeds.</p>
+@section Scripts {
+<script>
+    let availableModels = [];
+    let availableDatasets = [];
+    let testResults = [];
+    const csrfToken = '@Html.AntiForgeryToken()'.match(/value="([^"]+)"/)?.[1] || '';
+
+    async function postWithToken(url, body) {
+        if (body instanceof FormData) {
+            body.append('__RequestVerificationToken', csrfToken);
+        }
+        return fetch(url, { method: 'POST', body });
+    }
+
+    async function loadModels() {
+        const res = await fetch('?handler=Models');
+        availableModels = await res.json();
+        const select = document.getElementById('modelSelect');
+        
+        if (availableModels.length === 0) {
+            select.innerHTML = '<option value="">No trained models available</option>';
+            return;
+        }
+        
+        select.innerHTML = '<option value="">Select a model...</option>' +
+            availableModels.map(m => 
+                `<option value="${m.jobId}">${m.jobName} (${m.modelType})</option>`
+            ).join('');
+    }
+
+    async function loadDatasets() {
+        const res = await fetch('?handler=Datasets');
+        availableDatasets = await res.json();
+        const select = document.getElementById('datasetSelect');
+        
+        if (availableDatasets.length === 0) {
+            select.innerHTML = '<option value="">No datasets available</option>';
+            return;
+        }
+        
+        select.innerHTML = '<option value="">Select a dataset...</option>' +
+            availableDatasets.map(d => 
+                `<option value="${d.id}">${d.name} (${d.symbol})</option>`
+            ).join('');
+    }
+
+    async function loadTests() {
+        const res = await fetch('?handler=Tests');
+        testResults = await res.json();
+        renderTestsList();
+    }
+
+    document.getElementById('modelSelect').addEventListener('change', function() {
+        const model = availableModels.find(m => m.jobId === this.value);
+        const info = document.getElementById('modelInfo');
+        if (model) {
+            const sharpe = model.sharpeRatio?.toFixed(3) ?? 'N/A';
+            info.textContent = `Config: ${model.configurationName} | Sharpe: ${sharpe}`;
+        } else {
+            info.textContent = '';
+        }
+    });
+
+    document.getElementById('datasetSelect').addEventListener('change', function() {
+        const dataset = availableDatasets.find(d => d.id === this.value);
+        const info = document.getElementById('datasetInfo');
+        if (dataset) {
+            info.textContent = `${dataset.recordCount?.toLocaleString() ?? '?'} records`;
+        } else {
+            info.textContent = '';
+        }
+    });
+
+    document.getElementById('testForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const modelId = document.getElementById('modelSelect').value;
+        const datasetId = document.getElementById('datasetSelect').value;
+        const testName = document.getElementById('testName').value.trim();
+        
+        if (!modelId || !datasetId) {
+            alert('Please select both a model and a dataset');
+            return;
+        }
+        
+        // Clear input immediately so user can queue another test
+        document.getElementById('testName').value = '';
+        
+        // Create a placeholder test entry in the UI immediately
+        const model = availableModels.find(m => m.jobId === modelId);
+        const dataset = availableDatasets.find(d => d.id === datasetId);
+        const placeholderName = testName || `${model?.jobName} on ${dataset?.name}`;
+        const placeholderId = 'pending-' + Date.now();
+        
+        const placeholderTest = {
+            id: placeholderId,
+            name: placeholderName,
+            modelName: model?.jobName,
+            modelType: model?.modelType,
+            datasetName: dataset?.name,
+            symbol: dataset?.symbol,
+            status: 0, // Running
+            result: null
+        };
+        
+        testResults.unshift(placeholderTest);
+        renderTestsList();
+        
+        // Run the test in background
+        try {
+            const form = new FormData();
+            form.append('modelId', modelId);
+            form.append('datasetId', datasetId);
+            if (testName) form.append('testName', testName);
+            
+            const res = await postWithToken('?handler=RunTest', form);
+            const test = await res.json();
+            
+            if (test.error) {
+                // Update placeholder to show error
+                const idx = testResults.findIndex(t => t.id === placeholderId);
+                if (idx !== -1) {
+                    testResults[idx] = { ...testResults[idx], status: 2, errorMessage: test.error };
+                    renderTestsList();
+                }
+            } else {
+                // Replace placeholder with actual test from server
+                const idx = testResults.findIndex(t => t.id === placeholderId);
+                if (idx !== -1) {
+                    testResults[idx] = test;
+                    renderTestsList();
+                }
+            }
+        } catch (err) {
+            // Update placeholder to show error
+            const idx = testResults.findIndex(t => t.id === placeholderId);
+            if (idx !== -1) {
+                testResults[idx] = { ...testResults[idx], status: 2, errorMessage: err.message };
+                renderTestsList();
+            }
+        }
+    });
+
+    function renderTestsList() {
+        const container = document.getElementById('testsList');
+        const placeholder = document.getElementById('noTestsPlaceholder');
+        const countBadge = document.getElementById('testCount');
+        
+        countBadge.textContent = `${testResults.length} test${testResults.length !== 1 ? 's' : ''}`;
+        
+        if (testResults.length === 0) {
+            placeholder.style.display = 'block';
+            container.innerHTML = '';
+            return;
+        }
+        
+        placeholder.style.display = 'none';
+        
+        container.innerHTML = testResults.map((test, index) => {
+            const isFirst = index === 0;
+            const statusBadge = getStatusBadge(test.status);
+            const summaryMetrics = getSummaryMetrics(test);
+            
+            return `
+            <div class="accordion-item">
+                <h2 class="accordion-header">
+                    <button class="accordion-button ${isFirst && test.status === 1 ? '' : 'collapsed'} py-2" 
+                            type="button" data-bs-toggle="collapse" data-bs-target="#test-${test.id}">
+                        <div class="d-flex justify-content-between align-items-center w-100 me-3">
+                            <div>
+                                <strong>${escapeHtml(test.name)}</strong>
+                                <br><small class="text-muted">${test.modelType} • ${test.symbol}</small>
+                            </div>
+                            <div class="text-end">
+                                ${statusBadge}
+                                ${summaryMetrics}
+                            </div>
+                        </div>
+                    </button>
+                </h2>
+                <div id="test-${test.id}" class="accordion-collapse collapse ${isFirst && test.status === 1 ? 'show' : ''}">
+                    <div class="accordion-body">
+                        ${renderTestContent(test)}
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    function getStatusBadge(status) {
+        switch (status) {
+            case 0: // Running
+                return '<span class="badge bg-warning"><span class="spinner-border spinner-border-sm me-1"></span>Running</span>';
+            case 1: // Completed
+                return '<span class="badge bg-success">Completed</span>';
+            case 2: // Failed
+                return '<span class="badge bg-danger">Failed</span>';
+            default:
+                return '';
+        }
+    }
+
+    function getSummaryMetrics(test) {
+        if (test.status !== 1 || !test.result) return '';
+        const bt = test.result.backtestResult;
+        const sharpe = bt.metrics.sharpeRatio.toFixed(2);
+        const ret = (bt.metrics.totalReturn * 100).toFixed(1);
+        const sharpeClass = bt.metrics.sharpeRatio >= 1 ? 'text-success' : bt.metrics.sharpeRatio >= 0 ? 'text-warning' : 'text-danger';
+        const retClass = bt.metrics.totalReturn >= 0 ? 'text-success' : 'text-danger';
+        return `<br><small><span class="${sharpeClass}">Sharpe: ${sharpe}</span> • <span class="${retClass}">${ret}%</span></small>`;
+    }
+
+    function renderTestContent(test) {
+        if (test.status === 0) { // Running
+            return `
+            <div class="text-center py-4">
+                <div class="spinner-border text-primary mb-2"></div>
+                <p class="text-muted mb-0">Running test...</p>
+            </div>`;
+        }
+        
+        if (test.status === 2) { // Failed
+            return `
+            <div class="alert alert-danger mb-2">
+                <i class="bi bi-exclamation-triangle me-2"></i>
+                ${escapeHtml(test.errorMessage || 'Unknown error')}
+            </div>
+            <div class="text-end">
+                <button class="btn btn-sm btn-outline-danger" onclick="removeTest('${test.id}')">
+                    <i class="bi bi-trash me-1"></i>Remove
+                </button>
+            </div>`;
+        }
+        
+        const result = test.result;
+        const bt = result.backtestResult;
+        
+        return `
+        <div class="row mb-3">
+            <div class="col-md-6">
+                <h6 class="text-muted mb-2">Prediction Metrics</h6>
+                <table class="table table-sm">
+                    <tr><td>Total Predictions</td><td class="text-end">${result.totalPredictions.toLocaleString()}</td></tr>
+                    <tr><td>Mean Squared Error</td><td class="text-end">${result.meanSquaredError.toExponential(4)}</td></tr>
+                    <tr><td>Mean Absolute Error</td><td class="text-end">${result.meanAbsoluteError.toExponential(4)}</td></tr>
+                    <tr><td>Directional Accuracy</td><td class="text-end">${(result.directionalAccuracy * 100).toFixed(1)}%</td></tr>
+                </table>
+            </div>
+            <div class="col-md-6">
+                <h6 class="text-muted mb-2">Backtest Performance</h6>
+                <table class="table table-sm">
+                    <tr><td>Sharpe Ratio</td><td class="text-end ${bt.metrics.sharpeRatio >= 1 ? 'text-success fw-bold' : ''}">${bt.metrics.sharpeRatio.toFixed(3)}</td></tr>
+                    <tr><td>Total Return</td><td class="text-end ${bt.metrics.totalReturn >= 0 ? 'text-success' : 'text-danger'}">${(bt.metrics.totalReturn * 100).toFixed(2)}%</td></tr>
+                    <tr><td>Max Drawdown</td><td class="text-end text-danger">${(bt.metrics.maxDrawdown * 100).toFixed(2)}%</td></tr>
+                    <tr><td>Win Rate</td><td class="text-end">${(bt.metrics.winRate * 100).toFixed(1)}%</td></tr>
+                    <tr><td>Total Trades</td><td class="text-end">${bt.metrics.totalTrades}</td></tr>
+                    <tr><td>Profit Factor</td><td class="text-end">${bt.metrics.profitFactor.toFixed(2)}</td></tr>
+                </table>
             </div>
         </div>
-    </div>
-    <div class="col-md-4">
-        <div class="card h-100">
-            <div class="card-body">
-                <h6><i class="bi bi-calendar-range me-2"></i>Walk-Forward Analysis</h6>
-                <p class="small text-muted mb-0">Validate model performance with rolling out-of-sample tests.</p>
-            </div>
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="text-muted mb-0">Sample Predictions</h6>
+            <small class="text-muted">${result.predictions.length} of ${result.totalPredictions} shown</small>
         </div>
-    </div>
-    <div class="col-md-4">
-        <div class="card h-100">
-            <div class="card-body">
-                <h6><i class="bi bi-bar-chart-steps me-2"></i>Monte Carlo Simulation</h6>
-                <p class="small text-muted mb-0">Analyze strategy robustness with randomized trade sequences.</p>
-            </div>
+        <div style="max-height: 250px; overflow-y: auto;">
+            <table class="table table-sm table-striped mb-0">
+                <thead class="sticky-top bg-white">
+                    <tr>
+                        <th>Time</th>
+                        <th>Price</th>
+                        <th>Actual</th>
+                        <th>Predicted</th>
+                        <th>Signal</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${result.predictions.slice(0, 100).map(p => `
+                    <tr>
+                        <td class="small">${new Date(p.timestamp).toLocaleString()}</td>
+                        <td>$${p.closePrice.toFixed(2)}</td>
+                        <td class="${p.actualReturn > 0 ? 'text-success' : p.actualReturn < 0 ? 'text-danger' : ''}">${(p.actualReturn * 100).toFixed(4)}%</td>
+                        <td class="${p.predictedReturn > 0 ? 'text-success' : p.predictedReturn < 0 ? 'text-danger' : ''}">${(p.predictedReturn * 100).toFixed(4)}%</td>
+                        <td><span class="badge ${p.signal === 'BUY' ? 'bg-success' : p.signal === 'SELL' ? 'bg-danger' : 'bg-secondary'}">${p.signal}</span></td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
         </div>
-    </div>
-</div>
+        <div class="mt-2 text-end">
+            <button class="btn btn-sm btn-outline-danger" onclick="removeTest('${test.id}')">
+                <i class="bi bi-trash me-1"></i>Remove
+            </button>
+        </div>`;
+    }
+
+    async function removeTest(testId) {
+        const form = new FormData();
+        form.append('testId', testId);
+        await postWithToken('?handler=DeleteTest', form);
+        await loadTests();
+    }
+
+    async function clearAllTests() {
+        if (testResults.length === 0) return;
+        if (confirm('Remove all test results?')) {
+            await postWithToken('?handler=DeleteAllTests', new FormData());
+            await loadTests();
+        }
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Initialize
+    loadModels();
+    loadDatasets();
+    loadTests();
+</script>
+}

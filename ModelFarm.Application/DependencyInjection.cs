@@ -29,6 +29,7 @@ public static class DependencyInjection
         services.AddScoped<IExchangeService, ExchangeService>();
         services.AddScoped<IDatasetService, DatasetService>();
         services.AddScoped<ITrainingService, TrainingService>();
+        services.AddScoped<IModelTestingService, ModelTestingService>();
 
         // Background services
         // TaskProcessorService with reduced concurrency (2) to prevent OOM during training

@@ -13,6 +13,7 @@ public sealed class ApplicationDbContext : DbContext
     public DbSet<BackgroundTaskEntity> BackgroundTasks => Set<BackgroundTaskEntity>();
     public DbSet<TrainingConfigurationEntity> TrainingConfigurations => Set<TrainingConfigurationEntity>();
     public DbSet<TrainingJobEntity> TrainingJobs => Set<TrainingJobEntity>();
+    public DbSet<ModelTestEntity> ModelTests => Set<ModelTestEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -58,6 +59,23 @@ public sealed class ApplicationDbContext : DbContext
             entity.HasIndex(e => e.ConfigurationId);
             entity.HasIndex(e => e.CreatedAtUtc);
             entity.HasIndex(e => new { e.Status, e.CreatedAtUtc });
+        });
+
+        modelBuilder.Entity<ModelTestEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).HasMaxLength(200);
+            entity.Property(e => e.ModelName).HasMaxLength(200);
+            entity.Property(e => e.ModelType).HasMaxLength(50);
+            entity.Property(e => e.DatasetName).HasMaxLength(200);
+            entity.Property(e => e.Symbol).HasMaxLength(50);
+            entity.Property(e => e.ErrorMessage).HasMaxLength(2000);
+
+            // Indexes for common queries
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.ModelJobId);
+            entity.HasIndex(e => e.DatasetId);
+            entity.HasIndex(e => e.CreatedAtUtc);
         });
     }
 }
