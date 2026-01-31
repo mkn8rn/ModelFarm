@@ -18,6 +18,21 @@ public interface IModelTrainer
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Trains a model with checkpoint support for resumable training.
+    /// </summary>
+    Task<ModelTrainingResult> TrainWithCheckpointsAsync(
+        TrainingData trainData,
+        TrainingData validationData,
+        TrainingConfiguration config,
+        CheckpointManager checkpointManager,
+        Guid jobId,
+        TrainingCheckpoint? resumeFromCheckpoint,
+        NormalizationStats normStats,
+        IProgress<TrainingProgress>? progress = null,
+        Func<int, double, Task>? onCheckpointSaved = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Evaluates a trained model on test data.
     /// </summary>
     Task<ModelEvaluationResult> EvaluateAsync(

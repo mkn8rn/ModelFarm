@@ -32,6 +32,7 @@ public static class DependencyInjection
         // Background services
         services.AddHostedService<TaskProcessorService>();
         services.AddHostedService<OperationRecoveryService>();
+        services.AddHostedService<TrainingJobRecoveryService>();
 
         return services;
     }

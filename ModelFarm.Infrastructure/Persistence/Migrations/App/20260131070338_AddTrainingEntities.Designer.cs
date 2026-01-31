@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ModelFarm.Infrastructure.Persistence;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ModelFarm.Infrastructure.Persistence.Migrations.App
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260131070338_AddTrainingEntities")]
+    partial class AddTrainingEntities
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -234,10 +237,6 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<long>("AccumulatedTrainingTicks")
-                        .HasColumnType("bigint")
-                        .HasColumnName("accumulated_training_ticks");
-
                     b.Property<double?>("BestValidationLoss")
                         .HasColumnType("double precision")
                         .HasColumnName("best_validation_loss");
@@ -276,17 +275,9 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                         .HasColumnType("character varying(2000)")
                         .HasColumnName("execution_options_json");
 
-                    b.Property<bool>("HasCheckpoint")
-                        .HasColumnType("boolean")
-                        .HasColumnName("has_checkpoint");
-
                     b.Property<bool>("IsPaused")
                         .HasColumnType("boolean")
                         .HasColumnName("is_paused");
-
-                    b.Property<DateTime?>("LastCheckpointAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("last_checkpoint_at_utc");
 
                     b.Property<int>("MaxAttempts")
                         .HasColumnType("integer")

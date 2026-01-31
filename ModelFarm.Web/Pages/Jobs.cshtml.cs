@@ -97,9 +97,9 @@ public class JobsModel : PageModel
         return new JsonResult(new { success = paused });
     }
 
-    public async Task<IActionResult> OnPostResumeJobAsync(Guid jobId)
+    public async Task<IActionResult> OnPostResumePausedJobAsync(Guid jobId)
     {
-        var resumed = await _trainingService.ResumeTrainingJobAsync(jobId);
+        var resumed = await _trainingService.ResumePausedJobAsync(jobId);
         return new JsonResult(new { success = resumed });
     }
 
@@ -107,5 +107,11 @@ public class JobsModel : PageModel
     {
         var retried = await _trainingService.RetryTrainingJobAsync(jobId);
         return new JsonResult(new { success = retried });
+    }
+
+    public async Task<IActionResult> OnPostResumeFromCheckpointAsync(Guid jobId)
+    {
+        var resumed = await _trainingService.ResumeTrainingJobAsync(jobId);
+        return new JsonResult(new { success = resumed });
     }
 }

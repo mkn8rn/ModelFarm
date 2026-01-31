@@ -160,6 +160,11 @@ public sealed record TrainingJob
     public TrainingResult? Result { get; init; }
 
     /// <summary>
+    /// Whether this job has a saved checkpoint that can be resumed.
+    /// </summary>
+    public bool HasCheckpoint { get; init; } = false;
+
+    /// <summary>
     /// Progress percentage.
     /// </summary>
     public double ProgressPercent => TotalEpochs > 0

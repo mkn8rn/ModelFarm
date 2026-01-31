@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
+using Microsoft.EntityFrameworkCore;
 using ModelFarm.Application.ML;
 using ModelFarm.Contracts.MarketData;
 using ModelFarm.Contracts.Training;
+using ModelFarm.Infrastructure.Persistence;
+using ModelFarm.Infrastructure.Persistence.Entities;
 
 namespace ModelFarm.Application.Services;
 
@@ -10,23 +13,28 @@ public sealed class TrainingService : ITrainingService
     private readonly IDatasetService _datasetService;
     private readonly IModelTrainer _modelTrainer;
     private readonly BacktestEngine _backtestEngine;
-    
-    private static readonly ConcurrentDictionary<Guid, TrainingConfiguration> _configurations = new();
-    private static readonly ConcurrentDictionary<Guid, TrainingJobState> _jobs = new();
+    private readonly IDbContextFactory<ApplicationDbContext> _dbContextFactory;
+    private readonly CheckpointManager _checkpointManager;
+
+    // Runtime state for active jobs (not persisted - only used while training is in progress)
+    private static readonly ConcurrentDictionary<Guid, TrainingJobRuntimeState> _activeJobs = new();
 
     public TrainingService(
         IDatasetService datasetService,
         IModelTrainer modelTrainer,
-        BacktestEngine backtestEngine)
+        BacktestEngine backtestEngine,
+        IDbContextFactory<ApplicationDbContext> dbContextFactory)
     {
         _datasetService = datasetService;
         _modelTrainer = modelTrainer;
         _backtestEngine = backtestEngine;
+        _dbContextFactory = dbContextFactory;
+        _checkpointManager = new CheckpointManager();
     }
 
     // ==================== Configuration Management ====================
 
-    public Task<TrainingConfiguration> CreateConfigurationAsync(CreateTrainingConfigurationRequest request, CancellationToken cancellationToken = default)
+    public async Task<TrainingConfiguration> CreateConfigurationAsync(CreateTrainingConfigurationRequest request, CancellationToken cancellationToken = default)
     {
         var config = new TrainingConfiguration
         {
@@ -52,26 +60,38 @@ public sealed class TrainingService : ITrainingService
             CreatedAtUtc = DateTime.UtcNow
         };
 
-        _configurations[config.Id] = config;
-        return Task.FromResult(config);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entity = TrainingConfigurationEntity.FromConfiguration(config);
+        db.TrainingConfigurations.Add(entity);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return config;
     }
 
-    public Task<TrainingConfiguration?> GetConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default)
+    public async Task<TrainingConfiguration?> GetConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default)
     {
-        _configurations.TryGetValue(configurationId, out var config);
-        return Task.FromResult(config);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entity = await db.TrainingConfigurations.FindAsync([configurationId], cancellationToken);
+        return entity?.ToConfiguration();
     }
 
-    public Task<IReadOnlyList<TrainingConfiguration>> GetAllConfigurationsAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<TrainingConfiguration>> GetAllConfigurationsAsync(CancellationToken cancellationToken = default)
     {
-        return Task.FromResult<IReadOnlyList<TrainingConfiguration>>(_configurations.Values.OrderByDescending(c => c.CreatedAtUtc).ToList());
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entities = await db.TrainingConfigurations
+            .OrderByDescending(c => c.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+        return entities.Select(e => e.ToConfiguration()).ToList();
     }
 
-    public Task<TrainingConfiguration> UpdateConfigurationAsync(Guid configurationId, UpdateTrainingConfigurationRequest request, CancellationToken cancellationToken = default)
+    public async Task<TrainingConfiguration> UpdateConfigurationAsync(Guid configurationId, UpdateTrainingConfigurationRequest request, CancellationToken cancellationToken = default)
     {
-        if (!_configurations.TryGetValue(configurationId, out var existing))
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entity = await db.TrainingConfigurations.FindAsync([configurationId], cancellationToken);
+        if (entity is null)
             throw new KeyNotFoundException($"Configuration {configurationId} not found");
 
+        var existing = entity.ToConfiguration();
         var updated = existing with
         {
             Name = request.Name ?? existing.Name,
@@ -92,20 +112,31 @@ public sealed class TrainingService : ITrainingService
             UpdatedAtUtc = DateTime.UtcNow
         };
 
-        _configurations[configurationId] = updated;
-        return Task.FromResult(updated);
+        entity.UpdateFrom(updated);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return updated;
     }
 
-    public Task<bool> DeleteConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default)
+    public async Task<bool> DeleteConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(_configurations.TryRemove(configurationId, out _));
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entity = await db.TrainingConfigurations.FindAsync([configurationId], cancellationToken);
+        if (entity is null)
+            return false;
+
+        db.TrainingConfigurations.Remove(entity);
+        await db.SaveChangesAsync(cancellationToken);
+        return true;
     }
+
 
     // ==================== Training Job Management ====================
 
     public async Task<TrainingJob> StartTrainingAsync(TrainingJobRequest request, CancellationToken cancellationToken = default)
     {
-        if (!_configurations.TryGetValue(request.ConfigurationId, out var config))
+        var config = await GetConfigurationAsync(request.ConfigurationId, cancellationToken);
+        if (config is null)
             throw new KeyNotFoundException($"Configuration {request.ConfigurationId} not found");
 
         var dataset = await _datasetService.GetDatasetAsync(config.DatasetId, cancellationToken);
@@ -143,9 +174,18 @@ public sealed class TrainingService : ITrainingService
             CreatedAtUtc = now
         };
 
-        var state = new TrainingJobState
+        // Save job to database
+        await using (var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
-            Job = job,
+            var entity = TrainingJobEntity.FromJob(job, request.ExecutionOptions, request.Overrides);
+            db.TrainingJobs.Add(entity);
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        // Create runtime state for active job
+        var runtimeState = new TrainingJobRuntimeState
+        {
+            JobId = jobId,
             Configuration = config,
             Dataset = dataset,
             Overrides = request.Overrides,
@@ -153,73 +193,110 @@ public sealed class TrainingService : ITrainingService
             CancellationTokenSource = new CancellationTokenSource()
         };
 
-        _jobs[jobId] = state;
+        _activeJobs[jobId] = runtimeState;
 
         // Start training in background if data is ready
         if (initialStatus == TrainingJobStatus.Queued)
         {
-            _ = RunTrainingAsync(state);
+            _ = RunTrainingAsync(runtimeState);
         }
 
         return job;
     }
 
-    public Task<TrainingJob?> GetTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
+    public async Task<TrainingJob?> GetTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
     {
-        if (_jobs.TryGetValue(jobId, out var state))
-            return Task.FromResult<TrainingJob?>(state.Job);
-        return Task.FromResult<TrainingJob?>(null);
-    }
-
-    public Task<IReadOnlyList<TrainingJob>> GetAllTrainingJobsAsync(TrainingJobStatus? statusFilter = null, CancellationToken cancellationToken = default)
-    {
-        var jobs = _jobs.Values.Select(s => s.Job);
-        if (statusFilter.HasValue)
-            jobs = jobs.Where(j => j.Status == statusFilter.Value);
-        return Task.FromResult<IReadOnlyList<TrainingJob>>(jobs.OrderByDescending(j => j.CreatedAtUtc).ToList());
-    }
-
-    public Task<bool> CancelTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
-    {
-        if (!_jobs.TryGetValue(jobId, out var state))
-            return Task.FromResult(false);
-
-        state.CancellationTokenSource.Cancel();
-        state.Job = state.Job with
+        // Check active jobs first for most current state
+        if (_activeJobs.TryGetValue(jobId, out var runtimeState))
         {
-            Status = TrainingJobStatus.Cancelled,
-            Message = "Training cancelled by user",
-            CompletedAtUtc = DateTime.UtcNow
-        };
+            await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+            var entity = await db.TrainingJobs.FindAsync([jobId], cancellationToken);
+            if (entity is not null)
+            {
+                var job = entity.ToJob();
+                // Merge runtime state (IsPaused is transient)
+                return job with { IsPaused = runtimeState.IsPaused };
+            }
+        }
 
-        return Task.FromResult(true);
+        // Fall back to database
+        await using (var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken))
+        {
+            var entity = await db.TrainingJobs.FindAsync([jobId], cancellationToken);
+            return entity?.ToJob();
+        }
     }
 
-    public Task<IReadOnlyList<TrainingJob>> GetJobsForConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<TrainingJob>> GetAllTrainingJobsAsync(TrainingJobStatus? statusFilter = null, CancellationToken cancellationToken = default)
     {
-        var jobs = _jobs.Values
-            .Where(s => s.Job.ConfigurationId == configurationId)
-            .Select(s => s.Job)
-            .OrderByDescending(j => j.CreatedAtUtc)
-            .ToList();
-        return Task.FromResult<IReadOnlyList<TrainingJob>>(jobs);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var query = db.TrainingJobs.AsQueryable();
+        
+        if (statusFilter.HasValue)
+            query = query.Where(j => j.Status == statusFilter.Value);
+        
+        var entities = await query.OrderByDescending(j => j.CreatedAtUtc).ToListAsync(cancellationToken);
+        
+        // Merge runtime state for active jobs
+        return entities.Select(e =>
+        {
+            var job = e.ToJob();
+            if (_activeJobs.TryGetValue(job.Id, out var runtimeState))
+            {
+                return job with { IsPaused = runtimeState.IsPaused };
+            }
+            return job;
+        }).ToList();
     }
 
-    private async Task RunTrainingAsync(TrainingJobState state)
+    public async Task<bool> CancelTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
+    {
+        // Cancel runtime if active
+        if (_activeJobs.TryGetValue(jobId, out var runtimeState))
+        {
+            runtimeState.CancellationTokenSource.Cancel();
+        }
+
+        // Update database
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entity = await db.TrainingJobs.FindAsync([jobId], cancellationToken);
+        if (entity is null)
+            return false;
+
+        entity.Status = TrainingJobStatus.Cancelled;
+        entity.Message = "Training cancelled by user";
+        entity.CompletedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+
+        return true;
+    }
+
+    public async Task<IReadOnlyList<TrainingJob>> GetJobsForConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entities = await db.TrainingJobs
+            .Where(j => j.ConfigurationId == configurationId)
+            .OrderByDescending(j => j.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+        return entities.Select(e => e.ToJob()).ToList();
+    }
+
+    private async Task RunTrainingAsync(TrainingJobRuntimeState state)
     {
         var config = state.Configuration;
         var execOptions = state.ExecutionOptions;
         var cts = state.CancellationTokenSource;
+        var jobId = state.JobId;
 
         try
         {
             // Update status to preprocessing
-            state.Job = state.Job with
+            await UpdateJobAsync(jobId, job => job with
             {
                 Status = TrainingJobStatus.Preprocessing,
                 StartedAtUtc = DateTime.UtcNow,
                 Message = "Loading and preparing data..."
-            };
+            });
 
             // Load kline data
             var klines = await _datasetService.GetDatasetKlinesAsync(config.DatasetId, cts.Token);
@@ -230,12 +307,12 @@ public sealed class TrainingService : ITrainingService
             if (klines.Count < minRequired)
                 throw new InvalidOperationException($"Dataset has insufficient data ({klines.Count} records). Need at least {minRequired} records for MaxLags={config.MaxLags} and ForecastHorizon={config.ForecastHorizon}.");
 
-            state.Job = state.Job with { Message = $"Preparing features from {klines.Count} records..." };
+            await UpdateJobAsync(jobId, job => job with { Message = $"Preparing features from {klines.Count} records..." });
 
             // Prepare features using the same approach as the notebook
             var allData = FeatureEngineering.PrepareTrainingData(klines, config.MaxLags, config.ForecastHorizon);
             
-            state.Job = state.Job with { Message = $"Splitting {allData.Samples.Count} samples into train/val/test..." };
+            await UpdateJobAsync(jobId, job => job with { Message = $"Splitting {allData.Samples.Count} samples into train/val/test..." });
 
             // Split into train/validation/test
             var (trainData, validationData, testData) = FeatureEngineering.SplitData(
@@ -248,12 +325,27 @@ public sealed class TrainingService : ITrainingService
             var normalizedValidation = FeatureEngineering.ApplyNormalization(validationData, normStats);
             var normalizedTest = FeatureEngineering.ApplyNormalization(testData, normStats);
 
+
             // Apply hyperparameter overrides to create effective config
             var effectiveConfig = ApplyOverrides(config, state.Overrides);
             
+            // Check for existing checkpoint to resume from
+            TrainingCheckpoint? checkpoint = null;
+            if (state.ResumeFromCheckpoint)
+            {
+                checkpoint = await _checkpointManager.LoadCheckpointAsync(jobId, cts.Token);
+                if (checkpoint is not null)
+                {
+                    await UpdateJobAsync(jobId, job => job with
+                    {
+                        Message = $"Resuming from checkpoint at epoch {checkpoint.Epoch}..."
+                    });
+                }
+            }
+
             // Retry loop
             TrainingResult? finalResult = null;
-            var totalTrainingDuration = TimeSpan.Zero;
+            var totalTrainingDuration = checkpoint?.TotalTrainingDuration ?? TimeSpan.Zero;
             
             do
             {
@@ -273,6 +365,8 @@ public sealed class TrainingService : ITrainingService
                     {
                         LearningRate = effectiveConfig.LearningRate * execOptions.LearningRateRetryFactor
                     };
+                    // Clear checkpoint since we're starting fresh with new LR
+                    checkpoint = null;
                 }
 
                 // Shuffle training data on retry if enabled
@@ -280,52 +374,77 @@ public sealed class TrainingService : ITrainingService
                 if (state.RetryAttempt > 1 && execOptions.ShuffleOnRetry)
                 {
                     trainDataForRun = ShuffleTrainingData(normalizedTrain, state.RetryAttempt);
+                    // Clear checkpoint since data order changed
+                    checkpoint = null;
                 }
 
                 var maxAttempts = execOptions.RetryUntilSuccess ? execOptions.MaxRetryAttempts : 1;
-                state.Job = state.Job with
+                var startEpoch = checkpoint?.Epoch ?? 0;
+                await UpdateJobAsync(jobId, job => job with
                 {
                     Status = TrainingJobStatus.Training,
-                    CurrentEpoch = 0,
+                    CurrentEpoch = startEpoch,
                     CurrentAttempt = state.RetryAttempt,
                     MaxAttempts = maxAttempts,
-                    Message = $"Training on {trainData.Samples.Count} samples..."
-                };
-
-                // Create progress reporter
-                var progress = new Progress<TrainingProgress>(p =>
-                {
-                    state.Job = state.Job with
-                    {
-                        CurrentEpoch = p.CurrentEpoch,
-                        TrainingLoss = p.TrainingLoss,
-                        ValidationLoss = p.ValidationLoss,
-                        BestValidationLoss = p.BestValidationLoss,
-                        EpochsSinceImprovement = p.EpochsSinceImprovement,
-                        Message = p.Message
-                    };
+                    Message = checkpoint is not null 
+                        ? $"Resuming training from epoch {startEpoch}..." 
+                        : $"Training on {trainData.Samples.Count} samples..."
                 });
+
+                // Create progress reporter that updates database periodically
+                var lastUpdate = DateTime.UtcNow;
+                var progress = new Progress<TrainingProgress>(async p =>
+                {
+                    // Throttle database updates to avoid excessive writes
+                    var now = DateTime.UtcNow;
+                    if ((now - lastUpdate).TotalMilliseconds >= 500)
+                    {
+                        lastUpdate = now;
+                        await UpdateJobAsync(jobId, job => job with
+                        {
+                            CurrentEpoch = p.CurrentEpoch,
+                            TrainingLoss = p.TrainingLoss,
+                            ValidationLoss = p.ValidationLoss,
+                            BestValidationLoss = p.BestValidationLoss,
+                            EpochsSinceImprovement = p.EpochsSinceImprovement,
+                            Message = p.Message
+                        });
+                    }
+                });
+
+                // Callback when checkpoint is saved
+                async Task OnCheckpointSaved(int epoch, double bestLoss)
+                {
+                    await UpdateJobWithCheckpointAsync(jobId, epoch);
+                }
 
                 // Apply early stopping setting
                 var runConfig = execOptions.UseEarlyStopping 
                     ? effectiveConfig 
                     : effectiveConfig with { EarlyStoppingPatience = int.MaxValue };
 
-                // Train the model
-                var trainingResult = await _modelTrainer.TrainAsync(
+                // Train the model with checkpoint support
+                var trainingResult = await _modelTrainer.TrainWithCheckpointsAsync(
                     trainDataForRun,
                     normalizedValidation,
                     runConfig,
+                    _checkpointManager,
+                    jobId,
+                    checkpoint,
+                    normStats,
                     progress,
+                    OnCheckpointSaved,
                     cts.Token);
 
-                totalTrainingDuration += trainingResult.TrainingDuration;
+                // Clear checkpoint after first attempt so retries start fresh
+                checkpoint = null;
+                totalTrainingDuration = trainingResult.TrainingDuration;
 
-                state.Job = state.Job with
+                await UpdateJobAsync(jobId, job => job with
                 {
                     Status = TrainingJobStatus.Backtesting,
                     Message = "Running backtest on test data..."
-                };
+                });
 
                 // Evaluate on test set
                 var evalResult = await _modelTrainer.EvaluateAsync(trainingResult.Model, normalizedTest, cts.Token);
@@ -362,18 +481,18 @@ public sealed class TrainingService : ITrainingService
                 // Check if we've exhausted retries
                 if (state.RetryAttempt >= execOptions.MaxRetryAttempts)
                 {
-                    state.Job = state.Job with
+                    await UpdateJobAsync(jobId, job => job with
                     {
                         Message = $"Max retries ({execOptions.MaxRetryAttempts}) reached without meeting requirements"
-                    };
+                    });
                     break;
                 }
 
                 // Brief pause before retry
-                state.Job = state.Job with
+                await UpdateJobAsync(jobId, job => job with
                 {
                     Message = $"Attempt {state.RetryAttempt} did not meet requirements. Retrying..."
-                };
+                });
                 await Task.Delay(100, cts.Token);
 
             } while (execOptions.RetryUntilSuccess && state.RetryAttempt < execOptions.MaxRetryAttempts);
@@ -387,32 +506,51 @@ public sealed class TrainingService : ITrainingService
                 completionMsg += $" (after {state.RetryAttempt} attempts)";
             }
 
-            state.Job = state.Job with
+            await UpdateJobAsync(jobId, job => job with
             {
                 Status = TrainingJobStatus.Completed,
                 Message = completionMsg,
                 CompletedAtUtc = DateTime.UtcNow,
                 Result = finalResult
-            };
+            });
         }
         catch (OperationCanceledException)
         {
-            state.Job = state.Job with
+            await UpdateJobAsync(jobId, job => job with
             {
                 Status = TrainingJobStatus.Cancelled,
                 Message = "Training cancelled",
                 CompletedAtUtc = DateTime.UtcNow
-            };
+            });
         }
         catch (Exception ex)
         {
-            state.Job = state.Job with
+            await UpdateJobAsync(jobId, job => job with
             {
                 Status = TrainingJobStatus.Failed,
                 Message = $"Training failed: {ex.Message}",
                 ErrorMessage = ex.Message,
                 CompletedAtUtc = DateTime.UtcNow
-            };
+            });
+        }
+        finally
+        {
+            // Clean up runtime state when job completes
+            _activeJobs.TryRemove(jobId, out _);
+        }
+    }
+
+    // Helper method to update job in database
+    private async Task UpdateJobAsync(Guid jobId, Func<TrainingJob, TrainingJob> updateFunc)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync();
+        var entity = await db.TrainingJobs.FindAsync(jobId);
+        if (entity is not null)
+        {
+            var job = entity.ToJob();
+            var updatedJob = updateFunc(job);
+            entity.UpdateFrom(updatedJob);
+            await db.SaveChangesAsync();
         }
     }
 
@@ -469,9 +607,13 @@ public sealed class TrainingService : ITrainingService
         return true;
     }
 
-    private sealed class TrainingJobState
+    /// <summary>
+    /// Runtime state for active training jobs (not persisted).
+    /// Contains transient data like CancellationTokenSource and pause state.
+    /// </summary>
+    private sealed class TrainingJobRuntimeState
     {
-        public required TrainingJob Job { get; set; }
+        public required Guid JobId { get; init; }
         public required TrainingConfiguration Configuration { get; init; }
         public required DatasetDefinition Dataset { get; init; }
         public HyperparameterOverrides? Overrides { get; init; }
@@ -479,75 +621,180 @@ public sealed class TrainingService : ITrainingService
         public required CancellationTokenSource CancellationTokenSource { get; init; }
         public int RetryAttempt { get; set; } = 0;
         public bool IsPaused { get; set; } = false;
+        public bool ResumeFromCheckpoint { get; init; } = false;
     }
 
-    public Task<bool> PauseTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
+    // Helper method to update job checkpoint status
+    private async Task UpdateJobWithCheckpointAsync(Guid jobId, int epoch)
     {
-        if (!_jobs.TryGetValue(jobId, out var state))
-            return Task.FromResult(false);
-
-        if (state.Job.Status is not (TrainingJobStatus.Training or TrainingJobStatus.Backtesting or TrainingJobStatus.Preprocessing))
-            return Task.FromResult(false);
-
-        state.IsPaused = true;
-        state.Job = state.Job with
+        await using var db = await _dbContextFactory.CreateDbContextAsync();
+        var entity = await db.TrainingJobs.FindAsync(jobId);
+        if (entity is not null)
         {
-            IsPaused = true,
-            Message = "Paused"
-        };
-
-        return Task.FromResult(true);
+            entity.HasCheckpoint = true;
+            entity.LastCheckpointAtUtc = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+        }
     }
 
-    public Task<bool> ResumeTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
+    public async Task<bool> PauseTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
     {
-        if (!_jobs.TryGetValue(jobId, out var state))
-            return Task.FromResult(false);
+        if (!_activeJobs.TryGetValue(jobId, out var runtimeState))
+            return false;
 
-        if (!state.IsPaused)
-            return Task.FromResult(false);
+        // Check job status from database
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entity = await db.TrainingJobs.FindAsync([jobId], cancellationToken);
+        if (entity is null)
+            return false;
 
-        state.IsPaused = false;
-        state.Job = state.Job with
-        {
-            IsPaused = false,
-            Message = "Resumed"
-        };
+        if (entity.Status is not (TrainingJobStatus.Training or TrainingJobStatus.Backtesting or TrainingJobStatus.Preprocessing))
+            return false;
 
-        return Task.FromResult(true);
+        runtimeState.IsPaused = true;
+        entity.IsPaused = true;
+        entity.Message = "Paused";
+        await db.SaveChangesAsync(cancellationToken);
+
+        return true;
     }
 
-    public Task<bool> RetryTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
+    public async Task<bool> ResumePausedJobAsync(Guid jobId, CancellationToken cancellationToken = default)
     {
-        if (!_jobs.TryGetValue(jobId, out var state))
-            return Task.FromResult(false);
+        if (!_activeJobs.TryGetValue(jobId, out var runtimeState))
+            return false;
 
-        // Can only retry failed or completed jobs that didn't meet requirements
-        if (state.Job.Status is not (TrainingJobStatus.Failed or TrainingJobStatus.Completed))
-            return Task.FromResult(false);
+        if (!runtimeState.IsPaused)
+            return false;
 
-        // Reset state for retry
-        state.RetryAttempt = 0;
-        state.IsPaused = false;
-        state.CancellationTokenSource.TryReset();
+        runtimeState.IsPaused = false;
 
-        state.Job = state.Job with
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entity = await db.TrainingJobs.FindAsync([jobId], cancellationToken);
+        if (entity is not null)
         {
-            Status = TrainingJobStatus.Queued,
-            CurrentEpoch = 0,
-            CurrentAttempt = 1,
-            TrainingLoss = null,
-            ValidationLoss = null,
-            BestValidationLoss = null,
-            IsPaused = false,
-            ErrorMessage = null,
-            Result = null,
-            Message = "Queued for retry"
+            entity.IsPaused = false;
+            entity.Message = "Resumed";
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        return true;
+    }
+
+    public async Task<bool> RetryTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entity = await db.TrainingJobs.FindAsync([jobId], cancellationToken);
+        if (entity is null)
+            return false;
+
+        // Can only retry failed or completed jobs
+        if (entity.Status is not (TrainingJobStatus.Failed or TrainingJobStatus.Completed or TrainingJobStatus.Cancelled))
+            return false;
+
+        // Get configuration
+        var config = await GetConfigurationAsync(entity.ConfigurationId, cancellationToken);
+        if (config is null)
+            return false;
+
+        // Get dataset
+        var dataset = await _datasetService.GetDatasetAsync(config.DatasetId, cancellationToken);
+        if (dataset is null)
+            return false;
+
+        // Delete any existing checkpoint (retry starts fresh)
+        _checkpointManager.DeleteCheckpoint(jobId);
+
+        // Reset job state in database
+        entity.Status = TrainingJobStatus.Queued;
+        entity.CurrentEpoch = 0;
+        entity.CurrentAttempt = 1;
+        entity.TrainingLoss = null;
+        entity.ValidationLoss = null;
+        entity.BestValidationLoss = null;
+        entity.IsPaused = false;
+        entity.ErrorMessage = null;
+        entity.ResultJson = null;
+        entity.HasCheckpoint = false;
+        entity.LastCheckpointAtUtc = null;
+        entity.Message = "Queued for retry";
+        entity.StartedAtUtc = null;
+        entity.CompletedAtUtc = null;
+        await db.SaveChangesAsync(cancellationToken);
+
+        // Create new runtime state (not resuming from checkpoint)
+        var runtimeState = new TrainingJobRuntimeState
+        {
+            JobId = jobId,
+            Configuration = config,
+            Dataset = dataset,
+            Overrides = entity.GetOverrides(),
+            ExecutionOptions = entity.GetExecutionOptions(),
+            CancellationTokenSource = new CancellationTokenSource(),
+            ResumeFromCheckpoint = false
         };
+
+        _activeJobs[jobId] = runtimeState;
 
         // Start training again
-        _ = RunTrainingAsync(state);
+        _ = RunTrainingAsync(runtimeState);
 
-        return Task.FromResult(true);
+        return true;
+    }
+
+    /// <summary>
+    /// Resumes a training job from its last checkpoint.
+    /// </summary>
+    public async Task<bool> ResumeTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entity = await db.TrainingJobs.FindAsync([jobId], cancellationToken);
+        if (entity is null)
+            return false;
+
+        // Can only resume failed jobs that have checkpoints
+        if (entity.Status is not TrainingJobStatus.Failed)
+            return false;
+
+        if (!entity.HasCheckpoint || !_checkpointManager.CheckpointExists(jobId))
+            return false;
+
+        // Get configuration
+        var config = await GetConfigurationAsync(entity.ConfigurationId, cancellationToken);
+        if (config is null)
+            return false;
+
+        // Get dataset
+        var dataset = await _datasetService.GetDatasetAsync(config.DatasetId, cancellationToken);
+        if (dataset is null)
+            return false;
+
+        // Update job state - keep current epoch since we're resuming
+        entity.Status = TrainingJobStatus.Queued;
+        entity.IsPaused = false;
+        entity.ErrorMessage = null;
+        entity.ResultJson = null;
+        entity.Message = $"Queued for resume from epoch {entity.CurrentEpoch}";
+        entity.CompletedAtUtc = null;
+        await db.SaveChangesAsync(cancellationToken);
+
+        // Create runtime state with resume flag
+        var runtimeState = new TrainingJobRuntimeState
+        {
+            JobId = jobId,
+            Configuration = config,
+            Dataset = dataset,
+            Overrides = entity.GetOverrides(),
+            ExecutionOptions = entity.GetExecutionOptions(),
+            CancellationTokenSource = new CancellationTokenSource(),
+            ResumeFromCheckpoint = true
+        };
+
+        _activeJobs[jobId] = runtimeState;
+
+        // Start training (will resume from checkpoint)
+        _ = RunTrainingAsync(runtimeState);
+
+        return true;
     }
 }

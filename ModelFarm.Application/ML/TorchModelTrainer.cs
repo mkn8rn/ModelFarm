@@ -154,6 +154,210 @@ public sealed class TorchModelTrainer : IModelTrainer
         };
     }
 
+    public async Task<ModelTrainingResult> TrainWithCheckpointsAsync(
+        TrainingData trainData,
+        TrainingData validationData,
+        TrainingConfiguration config,
+        CheckpointManager checkpointManager,
+        Guid jobId,
+        TrainingCheckpoint? resumeFromCheckpoint,
+        NormalizationStats normStats,
+        IProgress<TrainingProgress>? progress = null,
+        Func<int, double, Task>? onCheckpointSaved = null,
+        CancellationToken cancellationToken = default)
+    {
+        const int CheckpointIntervalEpochs = 50;
+
+        var sw = Stopwatch.StartNew();
+        var epochHistory = new List<EpochMetrics>();
+        var featureCount = trainData.FeatureNames.Length;
+
+        // Convert data to tensors
+        var (trainFeatures, trainTargets) = CreateTensors(trainData);
+        var (valFeatures, valTargets) = CreateTensors(validationData);
+
+        // Create or load model
+        Module<Tensor, Tensor> model;
+        Module<Tensor, Tensor>? bestModelState = null;
+        var startEpoch = 1;
+        var bestValidationLoss = double.MaxValue;
+        var epochsSinceImprovement = 0;
+        var accumulatedDuration = TimeSpan.Zero;
+        var currentLearningRate = config.LearningRate;
+
+        if (resumeFromCheckpoint is not null)
+        {
+            // Load model from checkpoint
+            model = CreateModel(config.ModelType, featureCount, config);
+            var modelPath = checkpointManager.GetModelWeightsPath(jobId, resumeFromCheckpoint.ModelWeightsPath);
+            model.load(modelPath);
+
+            // Load best model if available
+            var bestModelPath = checkpointManager.GetModelWeightsPath(jobId, resumeFromCheckpoint.BestModelWeightsPath);
+            if (File.Exists(bestModelPath))
+            {
+                bestModelState = CreateModel(config.ModelType, featureCount, config);
+                bestModelState.load(bestModelPath);
+            }
+
+            // Restore state
+            startEpoch = resumeFromCheckpoint.Epoch + 1;
+            bestValidationLoss = resumeFromCheckpoint.BestValidationLoss;
+            epochsSinceImprovement = resumeFromCheckpoint.EpochsSinceImprovement;
+            accumulatedDuration = resumeFromCheckpoint.TotalTrainingDuration;
+            currentLearningRate = resumeFromCheckpoint.CurrentLearningRate;
+
+            progress?.Report(new TrainingProgress
+            {
+                CurrentEpoch = resumeFromCheckpoint.Epoch,
+                TotalEpochs = config.MaxEpochs,
+                TrainingLoss = 0,
+                ValidationLoss = bestValidationLoss,
+                BestValidationLoss = bestValidationLoss,
+                EpochsSinceImprovement = epochsSinceImprovement,
+                Message = $"Resumed from checkpoint at epoch {resumeFromCheckpoint.Epoch}"
+            });
+        }
+        else
+        {
+            model = CreateModel(config.ModelType, featureCount, config);
+        }
+
+        // Create optimizer with current learning rate
+        var optimizer = torch.optim.Adam(model.parameters(), lr: currentLearningRate);
+        var lossFunction = nn.MSELoss();
+
+        var earlyStopTriggered = false;
+        double finalTrainingLoss = 0;
+        double finalValidationLoss = bestValidationLoss;
+
+        for (int epoch = startEpoch; epoch <= config.MaxEpochs; epoch++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var epochSw = Stopwatch.StartNew();
+
+            // Training step
+            model.train();
+            optimizer.zero_grad();
+
+            var trainPredictions = model.forward(trainFeatures);
+            var trainLoss = lossFunction.forward(trainPredictions, trainTargets);
+            trainLoss.backward();
+            optimizer.step();
+
+            var trainingLoss = trainLoss.item<float>();
+
+            // Validation step
+            model.eval();
+            using (torch.no_grad())
+            {
+                var valPredictions = model.forward(valFeatures);
+                var valLoss = lossFunction.forward(valPredictions, valTargets);
+                finalValidationLoss = valLoss.item<float>();
+            }
+
+            epochSw.Stop();
+            finalTrainingLoss = trainingLoss;
+
+            epochHistory.Add(new EpochMetrics
+            {
+                Epoch = epoch,
+                TrainingLoss = trainingLoss,
+                ValidationLoss = finalValidationLoss,
+                Duration = epochSw.Elapsed
+            });
+
+            if (finalValidationLoss < bestValidationLoss)
+            {
+                bestValidationLoss = finalValidationLoss;
+                bestModelState = CloneModel(model, config.ModelType, featureCount, config);
+                epochsSinceImprovement = 0;
+            }
+            else
+            {
+                epochsSinceImprovement++;
+            }
+
+            progress?.Report(new TrainingProgress
+            {
+                CurrentEpoch = epoch,
+                TotalEpochs = config.MaxEpochs,
+                TrainingLoss = trainingLoss,
+                ValidationLoss = finalValidationLoss,
+                BestValidationLoss = bestValidationLoss,
+                EpochsSinceImprovement = epochsSinceImprovement,
+                Message = $"Epoch {epoch}/{config.MaxEpochs} - Train Loss: {trainingLoss:F6}, Val Loss: {finalValidationLoss:F6}"
+            });
+
+            // Save checkpoint periodically
+            if (epoch % CheckpointIntervalEpochs == 0)
+            {
+                var checkpoint = new TrainingCheckpoint
+                {
+                    JobId = jobId,
+                    ConfigurationId = config.Id,
+                    Epoch = epoch,
+                    BestValidationLoss = bestValidationLoss,
+                    EpochsSinceImprovement = epochsSinceImprovement,
+                    TotalTrainingDuration = accumulatedDuration + sw.Elapsed,
+                    RetryAttempt = 1,
+                    CurrentLearningRate = currentLearningRate,
+                    ModelType = config.ModelType,
+                    FeatureCount = featureCount,
+                    FeatureNames = trainData.FeatureNames,
+                    HiddenLayerSizes = config.HiddenLayerSizes,
+                    NormalizationStats = normStats,
+                    CreatedAtUtc = DateTime.UtcNow,
+                    ModelWeightsPath = "model_current.pt",
+                    BestModelWeightsPath = "model_best.pt"
+                };
+
+                await checkpointManager.SaveCheckpointAsync(checkpoint, model, bestModelState, cancellationToken);
+                onCheckpointSaved?.Invoke(epoch, bestValidationLoss);
+            }
+
+            // Early stopping
+            if (epochsSinceImprovement >= config.EarlyStoppingPatience)
+            {
+                earlyStopTriggered = true;
+                break;
+            }
+
+            // Small delay to allow cancellation checks
+            await Task.Delay(1, cancellationToken);
+        }
+
+        sw.Stop();
+
+        // Use best model if available
+        var finalModel = bestModelState ?? model;
+
+        var trainedModel = new TorchTrainedModel(
+            Guid.NewGuid(),
+            finalModel,
+            config.ModelType,
+            trainData.FeatureNames);
+
+        // Dispose tensors
+        trainFeatures.Dispose();
+        trainTargets.Dispose();
+        valFeatures.Dispose();
+        valTargets.Dispose();
+
+        return new ModelTrainingResult
+        {
+            Model = trainedModel,
+            EpochsTrained = epochHistory.Count + (resumeFromCheckpoint?.Epoch ?? 0),
+            FinalTrainingLoss = finalTrainingLoss,
+            FinalValidationLoss = finalValidationLoss,
+            BestValidationLoss = bestValidationLoss,
+            EarlyStopTriggered = earlyStopTriggered,
+            TrainingDuration = accumulatedDuration + sw.Elapsed,
+            EpochHistory = epochHistory
+        };
+    }
+
     public Task<ModelEvaluationResult> EvaluateAsync(
         ITrainedModel model,
         TrainingData testData,

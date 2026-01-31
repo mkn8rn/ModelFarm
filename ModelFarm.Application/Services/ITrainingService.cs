@@ -62,14 +62,19 @@ public interface ITrainingService
     Task<bool> PauseTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Resumes a paused training job.
+    /// Resumes a paused training job (continues in-memory training loop).
     /// </summary>
-    Task<bool> ResumeTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default);
+    Task<bool> ResumePausedJobAsync(Guid jobId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Retries a failed or completed training job.
+    /// Retries a failed or completed training job from the beginning.
     /// </summary>
     Task<bool> RetryTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resumes a training job from its last checkpoint (for interrupted jobs).
+    /// </summary>
+    Task<bool> ResumeTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets training jobs for a specific configuration.

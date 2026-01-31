@@ -241,15 +241,18 @@
                 buttons += `<button class="btn btn-sm btn-outline-warning me-1" onclick="pauseJob('${j.id}')" title="Pause"><i class="bi bi-pause-fill"></i></button>`;
                 buttons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${j.id}')" title="Cancel"><i class="bi bi-x-lg"></i></button>`;
             } else if (isPaused) {
-                buttons += `<button class="btn btn-sm btn-outline-success me-1" onclick="resumeJob('${j.id}')" title="Resume"><i class="bi bi-play-fill"></i></button>`;
+                buttons += `<button class="btn btn-sm btn-outline-success me-1" onclick="resumePausedJob('${j.id}')" title="Resume"><i class="bi bi-play-fill"></i></button>`;
                 buttons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${j.id}')" title="Cancel"><i class="bi bi-x-lg"></i></button>`;
             } else if (isCompleted) {
                 buttons += `<button class="btn btn-sm btn-outline-primary me-1" onclick="showResults('${j.id}')" title="Results"><i class="bi bi-bar-chart-fill"></i></button>`;
                 if (!j.result?.meetsRequirements) {
-                    buttons += `<button class="btn btn-sm btn-outline-secondary" onclick="retryJob('${j.id}')" title="Retry"><i class="bi bi-arrow-clockwise"></i></button>`;
+                    buttons += `<button class="btn btn-sm btn-outline-secondary" onclick="retryJob('${j.id}')" title="Retry from start"><i class="bi bi-arrow-clockwise"></i></button>`;
                 }
             } else if (isFailed || isCancelled) {
-                buttons += `<button class="btn btn-sm btn-outline-secondary" onclick="retryJob('${j.id}')" title="Retry"><i class="bi bi-arrow-clockwise"></i></button>`;
+                if (j.hasCheckpoint) {
+                    buttons += `<button class="btn btn-sm btn-outline-success me-1" onclick="resumeFromCheckpoint('${j.id}')" title="Resume from checkpoint"><i class="bi bi-skip-forward-fill"></i></button>`;
+                }
+                buttons += `<button class="btn btn-sm btn-outline-secondary" onclick="retryJob('${j.id}')" title="Retry from start"><i class="bi bi-arrow-clockwise"></i></button>`;
             }
             
             return `
@@ -353,15 +356,21 @@
         loadJobs();
     }
 
-    async function resumeJob(jobId) {
+    async function resumePausedJob(jobId) {
         const form = new FormData();
-        await postWithToken(`?handler=ResumeJob&jobId=${jobId}`, form);
+        await postWithToken(`?handler=ResumePausedJob&jobId=${jobId}`, form);
         loadJobs();
     }
 
     async function retryJob(jobId) {
         const form = new FormData();
         await postWithToken(`?handler=RetryJob&jobId=${jobId}`, form);
+        loadJobs();
+    }
+
+    async function resumeFromCheckpoint(jobId) {
+        const form = new FormData();
+        await postWithToken(`?handler=ResumeFromCheckpoint&jobId=${jobId}`, form);
         loadJobs();
     }
     
