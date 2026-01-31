@@ -82,6 +82,62 @@
                             <label class="form-label small" data-bs-toggle="tooltip" title="Dropout rate for regularization (0.0-1.0). Randomly disables neurons during training to prevent overfitting. 0.2 means 20% of neurons are dropped.">Dropout Rate</label>
                             <input type="number" class="form-control form-control-sm" id="configDropout" value="0.2" step="0.05">
                         </div>
+                        <div class="col-4 mb-2">
+                            <div class="form-check mt-4">
+                                <input class="form-check-input" type="checkbox" id="configUseEarlyStopping" checked>
+                                <label class="form-check-label small" for="configUseEarlyStopping" data-bs-toggle="tooltip" title="Enable early stopping to halt training when validation loss stops improving. Recommended to keep enabled to prevent overfitting.">Use Early Stopping</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <hr class="my-2">
+                    <small class="text-muted">Checkpoint Settings</small>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="configSaveCheckpoints" checked>
+                                <label class="form-check-label small" for="configSaveCheckpoints" data-bs-toggle="tooltip" title="Save model checkpoints during training. Allows resuming training if interrupted.">Save Checkpoints</label>
+                            </div>
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Number of epochs between checkpoint saves. Lower values save more frequently but use more disk space.">Checkpoint Interval</label>
+                            <input type="number" class="form-control form-control-sm" id="configCheckpointInterval" value="50">
+                        </div>
+                    </div>
+
+                    <hr class="my-2">
+                    <small class="text-muted">Retry Settings</small>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="configRetryUntilSuccess">
+                                <label class="form-check-label small" for="configRetryUntilSuccess" data-bs-toggle="tooltip" title="Automatically retry training until performance requirements are met or max retries reached.">Retry Until Success</label>
+                            </div>
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Maximum number of retry attempts before giving up.">Max Retry Attempts</label>
+                            <input type="number" class="form-control form-control-sm" id="configMaxRetries" value="10">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="configShuffleOnRetry">
+                                <label class="form-check-label small" for="configShuffleOnRetry" data-bs-toggle="tooltip" title="Shuffle training data between retry attempts to introduce variation.">Shuffle Data on Retry</label>
+                            </div>
+                        </div>
+                        <div class="col-6 mb-2">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="configScaleLROnRetry">
+                                <label class="form-check-label small" for="configScaleLROnRetry" data-bs-toggle="tooltip" title="Scale the learning rate on each retry attempt by the specified factor.">Scale LR on Retry</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row" id="lrScaleRow" style="display:none;">
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="Factor to multiply learning rate by on each retry. Values &lt; 1 decrease LR (e.g., 0.5 halves it). Values &gt; 1 increase LR.">LR Retry Scale</label>
+                            <input type="number" class="form-control form-control-sm" id="configLRRetryScale" value="0.5" step="0.1">
+                        </div>
                     </div>
 
                     <hr class="my-2">
@@ -166,6 +222,11 @@
         return fetch(url, { method: 'POST', body });
     }
 
+    // Show/hide LR scale input based on checkbox
+    document.getElementById('configScaleLROnRetry').addEventListener('change', function() {
+        document.getElementById('lrScaleRow').style.display = this.checked ? 'flex' : 'none';
+    });
+
     // ==================== Configurations ====================
     document.getElementById('configType').addEventListener('change', function() {
         const selectedType = this.value;
@@ -189,12 +250,24 @@
         form.append('BatchSize', document.getElementById('configBatch').value);
         form.append('MaxEpochs', document.getElementById('configEpochs').value);
         form.append('EarlyStoppingPatience', document.getElementById('configEarlyStopPatience').value);
+        form.append('UseEarlyStopping', document.getElementById('configUseEarlyStopping').checked);
         form.append('ValidationSplit', document.getElementById('configValSplit').value);
         form.append('TestSplit', document.getElementById('configTestSplit').value);
         form.append('RandomSeed', document.getElementById('configSeed').value);
         form.append('DropoutRate', document.getElementById('configDropout').value);
+        // Checkpoint settings
+        form.append('SaveCheckpoints', document.getElementById('configSaveCheckpoints').checked);
+        form.append('CheckpointIntervalEpochs', document.getElementById('configCheckpointInterval').value);
+        // Retry settings
+        form.append('RetryUntilSuccess', document.getElementById('configRetryUntilSuccess').checked);
+        form.append('MaxRetryAttempts', document.getElementById('configMaxRetries').value);
+        form.append('ShuffleOnRetry', document.getElementById('configShuffleOnRetry').checked);
+        form.append('ScaleLearningRateOnRetry', document.getElementById('configScaleLROnRetry').checked);
+        form.append('LearningRateRetryScale', document.getElementById('configLRRetryScale').value);
+        // Performance requirements
         form.append('MinSharpeRatio', document.getElementById('configSharpe').value);
         form.append('MaxDrawdown', document.getElementById('configDrawdown').value);
+        // Trading environment
         form.append('InitialCapital', document.getElementById('configCapital').value);
         form.append('MakerFee', document.getElementById('configMakerFee').value);
         form.append('TakerFee', document.getElementById('configTakerFee').value);

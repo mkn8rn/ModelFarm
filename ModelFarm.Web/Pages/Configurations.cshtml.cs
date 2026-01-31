@@ -51,6 +51,9 @@ public class ConfigurationsModel : PageModel
     public int EarlyStoppingPatience { get; set; } = 50;
 
     [BindProperty]
+    public bool UseEarlyStopping { get; set; } = true;
+
+    [BindProperty]
     public double ValidationSplit { get; set; } = 0.2;
 
     [BindProperty]
@@ -61,6 +64,29 @@ public class ConfigurationsModel : PageModel
 
     [BindProperty]
     public double DropoutRate { get; set; } = 0.2;
+
+    // Checkpoint Settings
+    [BindProperty]
+    public bool SaveCheckpoints { get; set; } = true;
+
+    [BindProperty]
+    public int CheckpointIntervalEpochs { get; set; } = 50;
+
+    // Retry Settings
+    [BindProperty]
+    public bool RetryUntilSuccess { get; set; } = false;
+
+    [BindProperty]
+    public int MaxRetryAttempts { get; set; } = 10;
+
+    [BindProperty]
+    public bool ShuffleOnRetry { get; set; } = false;
+
+    [BindProperty]
+    public bool ScaleLearningRateOnRetry { get; set; } = false;
+
+    [BindProperty]
+    public double LearningRateRetryScale { get; set; } = 0.5;
 
     [BindProperty]
     public double? MinSharpeRatio { get; set; } = 1.0;
@@ -121,10 +147,18 @@ public class ConfigurationsModel : PageModel
                 BatchSize = BatchSize,
                 MaxEpochs = MaxEpochs,
                 EarlyStoppingPatience = EarlyStoppingPatience,
+                UseEarlyStopping = UseEarlyStopping,
                 ValidationSplit = ValidationSplit,
                 TestSplit = TestSplit,
                 RandomSeed = RandomSeed,
                 DropoutRate = DropoutRate,
+                SaveCheckpoints = SaveCheckpoints,
+                CheckpointIntervalEpochs = CheckpointIntervalEpochs,
+                RetryUntilSuccess = RetryUntilSuccess,
+                MaxRetryAttempts = MaxRetryAttempts,
+                ShuffleOnRetry = ShuffleOnRetry,
+                ScaleLearningRateOnRetry = ScaleLearningRateOnRetry,
+                LearningRateRetryScale = LearningRateRetryScale,
                 PerformanceRequirements = new PerformanceRequirements
                 {
                     MinSharpeRatio = MinSharpeRatio,
