@@ -72,6 +72,23 @@ public sealed class IngestionService : IIngestionService
             try
             {
                 var ingestionResult = TaskResult.FromJson<DataIngestionResult>(task.ResultJson);
+                
+                // Map sample records
+                var sampleRecords = ingestionResult.SampleRecords?
+                    .Select(s => new Kline
+                    {
+                        OpenTime = new DateTimeOffset(s.OpenTimeUtc, TimeSpan.Zero).ToUnixTimeMilliseconds(),
+                        Open = s.Open,
+                        High = s.High,
+                        Low = s.Low,
+                        Close = s.Close,
+                        Volume = s.Volume,
+                        CloseTime = 0, // Not stored in sample
+                        QuoteAssetVolume = 0,
+                        NumberOfTrades = 0
+                    })
+                    .ToList() ?? [];
+                
                 result = new IngestionResult
                 {
                     Exchange = default,
@@ -82,7 +99,11 @@ public sealed class IngestionService : IIngestionService
                     LastTimestampUtc = ingestionResult.LastTimestampUtc,
                     TimeSpanCovered = ingestionResult.LastTimestampUtc - ingestionResult.FirstTimestampUtc,
                     IngestionDuration = ingestionResult.Duration,
-                    SampleRecords = []
+                    HighestPrice = ingestionResult.HighestPrice,
+                    LowestPrice = ingestionResult.LowestPrice,
+                    TotalVolume = ingestionResult.TotalVolume,
+                    TotalTrades = ingestionResult.TotalTrades,
+                    SampleRecords = sampleRecords
                 };
             }
             catch

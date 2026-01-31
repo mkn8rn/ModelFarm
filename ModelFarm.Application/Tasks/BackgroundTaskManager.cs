@@ -158,7 +158,13 @@ public sealed class BackgroundTaskManager : IBackgroundTaskManager, IAsyncDispos
             task.Status = BackgroundTaskStatus.Completed;
             task.CompletedAtUtc = DateTime.UtcNow;
             task.ProgressPercent = 100;
-            task.ResultJson = result?.ToJson();
+            
+            // Only overwrite ResultJson if a result is explicitly provided
+            // (handlers may set task.ResultJson directly during execution)
+            if (result is not null)
+            {
+                task.ResultJson = result.ToJson();
+            }
 
             QueuePersistence(taskId);
         }

@@ -244,12 +244,17 @@
     }
 
     function showResults(r) {
+        if (!r) {
+            showError('No results available');
+            return;
+        }
+        
         document.getElementById('progressCard').style.display = 'none';
         document.getElementById('resultsCard').style.display = 'block';
         document.getElementById('errorCard').style.display = 'none';
         resetButtons();
 
-        document.getElementById('statTotalRecords').textContent = r.totalRecords.toLocaleString();
+        document.getElementById('statTotalRecords').textContent = r.totalRecords?.toLocaleString() || '-';
         document.getElementById('statHighPrice').textContent = r.highestPrice?.toFixed(2) || '-';
         document.getElementById('statLowPrice').textContent = r.lowestPrice?.toFixed(2) || '-';
         document.getElementById('statDuration').textContent = formatDuration(r.ingestionDuration);
@@ -261,7 +266,7 @@
         tbody.innerHTML = '';
         (r.sampleRecords || []).forEach(k => {
             const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${formatDate(k.openTimeUtc)}</td><td class="text-end">${k.open.toFixed(2)}</td><td class="text-end">${k.high.toFixed(2)}</td><td class="text-end">${k.low.toFixed(2)}</td><td class="text-end">${k.close.toFixed(2)}</td><td class="text-end">${k.volume.toFixed(4)}</td>`;
+            tr.innerHTML = `<td>${formatDate(k.openTimeUtc)}</td><td class="text-end">${k.open?.toFixed(2) || '-'}</td><td class="text-end">${k.high?.toFixed(2) || '-'}</td><td class="text-end">${k.low?.toFixed(2) || '-'}</td><td class="text-end">${k.close?.toFixed(2) || '-'}</td><td class="text-end">${k.volume?.toFixed(4) || '-'}</td>`;
             tbody.appendChild(tr);
         });
     }
@@ -330,7 +335,11 @@
                 // status is numeric: 0=NotStarted, 1=InProgress, 2=Completed, 3=Failed
                 if (p.status === 2) {
                     stopPolling();
-                    showResults(p.result);
+                    if (p.result) {
+                        showResults(p.result);
+                    } else {
+                        showError('Completed but no results available');
+                    }
                 } else if (p.status === 3) {
                     stopPolling();
                     showError(p.errorMessage || 'Failed');

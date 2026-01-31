@@ -31,6 +31,7 @@ public interface IModelTrainer
         int checkpointIntervalEpochs,
         IProgress<TrainingProgress>? progress = null,
         Func<int, double, Task>? onCheckpointSaved = null,
+        Func<bool>? isPaused = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

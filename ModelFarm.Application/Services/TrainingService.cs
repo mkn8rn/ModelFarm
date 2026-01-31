@@ -362,6 +362,9 @@ public sealed class TrainingService : ITrainingService
             var totalTrainingDuration = checkpoint?.TotalTrainingDuration ?? TimeSpan.Zero;
             var effectiveConfig = config;
             
+            // Initialize retry attempt from saved state (for resume from checkpoint)
+            state.RetryAttempt = state.InitialRetryAttempt;
+            
             do
             {
                 state.RetryAttempt++;
@@ -373,8 +376,12 @@ public sealed class TrainingService : ITrainingService
                     await Task.Delay(500, cts.Token);
                 }
                 
-                // Scale learning rate on retry if enabled
-                if (state.RetryAttempt > 1 && config.ScaleLearningRateOnRetry)
+                // Scale learning rate on retry if enabled (only for actual retries, not resume)
+                // Don't clear checkpoint if we're resuming from a checkpoint on this attempt
+                var isActualRetry = state.RetryAttempt > 1 && !state.ResumeFromCheckpoint;
+                var isResumeAttempt = state.ResumeFromCheckpoint && state.RetryAttempt == state.InitialRetryAttempt + 1;
+                
+                if (isActualRetry && config.ScaleLearningRateOnRetry)
                 {
                     effectiveConfig = effectiveConfig with
                     {
@@ -384,9 +391,9 @@ public sealed class TrainingService : ITrainingService
                     checkpoint = null;
                 }
 
-                // Shuffle training data on retry if enabled
+                // Shuffle training data on retry if enabled (only for actual retries, not resume)
                 var trainDataForRun = normalizedTrain;
-                if (state.RetryAttempt > 1 && config.ShuffleOnRetry)
+                if (isActualRetry && config.ShuffleOnRetry)
                 {
                     trainDataForRun = ShuffleTrainingData(normalizedTrain, state.RetryAttempt);
                     // Clear checkpoint since data order changed
@@ -452,11 +459,15 @@ public sealed class TrainingService : ITrainingService
                     checkpointInterval,
                     progress,
                     onCheckpointSaved,
+                    () => state.IsPaused,  // Pass pause check function
                     cts.Token);
 
                 // Clear checkpoint after first attempt so retries start fresh
                 checkpoint = null;
                 totalTrainingDuration = trainingResult.TrainingDuration;
+                
+                // Clear resume flag so subsequent retries are treated as actual retries
+                state.ResumeFromCheckpoint = false;
 
                 await UpdateJobAsync(jobId, job => job with
                 {
@@ -621,8 +632,9 @@ public sealed class TrainingService : ITrainingService
         public required DatasetDefinition Dataset { get; init; }
         public required CancellationTokenSource CancellationTokenSource { get; init; }
         public int RetryAttempt { get; set; } = 0;
+        public int InitialRetryAttempt { get; init; } = 0;  // For resume: the attempt we're continuing
         public bool IsPaused { get; set; } = false;
-        public bool ResumeFromCheckpoint { get; init; } = false;
+        public bool ResumeFromCheckpoint { get; set; } = false;  // Set to false after first training completes
     }
 
     // Helper method to update job checkpoint status
@@ -769,24 +781,27 @@ public sealed class TrainingService : ITrainingService
         if (dataset is null)
             return false;
 
-        // Update job state - keep current epoch since we're resuming
+        // Preserve the current attempt count for resume
+        var currentAttempt = entity.CurrentAttempt;
+
+        // Update job state - keep current epoch and attempt since we're resuming
         entity.Status = TrainingJobStatus.Queued;
         entity.IsPaused = false;
         entity.ErrorMessage = null;
         entity.ResultJson = null;
-        entity.Message = $"Queued for resume from epoch {entity.CurrentEpoch}";
+        entity.Message = $"Queued for resume from epoch {entity.CurrentEpoch} (attempt {currentAttempt})";
         entity.CompletedAtUtc = null;
         await db.SaveChangesAsync(cancellationToken);
 
-
-        // Create runtime state with resume flag
+        // Create runtime state with resume flag and preserved attempt count
         var runtimeState = new TrainingJobRuntimeState
         {
             JobId = jobId,
             Configuration = config,
             Dataset = dataset,
             CancellationTokenSource = new CancellationTokenSource(),
-            ResumeFromCheckpoint = true
+            ResumeFromCheckpoint = true,
+            InitialRetryAttempt = currentAttempt - 1  // -1 because it will be incremented at loop start
         };
 
         _activeJobs[jobId] = runtimeState;

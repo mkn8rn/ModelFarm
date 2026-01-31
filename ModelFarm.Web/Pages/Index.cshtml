@@ -4,24 +4,62 @@
     ViewData["Title"] = "Home";
 }
 
-<h4>ModelFarm</h4>
-<p>Data pipeline for data ingestion and model training.</p>
+<div class="mb-4">
+    <h4>ModelFarm</h4>
+    <p class="text-muted">Machine learning platform for training and backtesting quantitative trading strategies.</p>
+</div>
 
-<div class="row">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">Data Ingestion</div>
+<div class="row g-3">
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-cloud-download me-2"></i>Data Ingestion</div>
             <div class="card-body">
-                <p class="card-text small">Fetch historical kline data from Binance for supported trading pairs.</p>
-                <a asp-page="/Ingestion" class="btn btn-primary btn-sm">Open</a>
+                <p class="card-text small">Fetch historical kline (OHLCV) data from Binance for any supported trading pair and interval.</p>
+                <a asp-page="/Ingestion" class="btn btn-outline-primary btn-sm">Open Ingestion</a>
             </div>
         </div>
     </div>
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">Model Training</div>
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-database me-2"></i>Datasets</div>
             <div class="card-body">
-                <p class="card-text small text-muted">Not implemented.</p>
+                <p class="card-text small">Create and manage training datasets from ingested market data with configurable date ranges.</p>
+                <a asp-page="/Datasets" class="btn btn-outline-primary btn-sm">Manage Datasets</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-sliders me-2"></i>Configurations</div>
+            <div class="card-body">
+                <p class="card-text small">Define training configurations with model architecture, hyperparameters, checkpoints, retry settings, and performance requirements.</p>
+                <a asp-page="/Configurations" class="btn btn-outline-primary btn-sm">Manage Configs</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-cpu me-2"></i>Training Jobs</div>
+            <div class="card-body">
+                <p class="card-text small">Start, monitor, pause, and resume ML training jobs. View real-time progress and backtest results.</p>
+                <a asp-page="/Jobs" class="btn btn-outline-primary btn-sm">View Jobs</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-graph-up me-2"></i>Model Overview</div>
+            <div class="card-body">
+                <p class="card-text small">Browse trained models and analyze performance with equity curves, Sharpe ratio, win rate, and other financial metrics.</p>
+                <a asp-page="/Models/Overview" class="btn btn-outline-primary btn-sm">View Models</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-play-circle me-2"></i>Model Testing</div>
+            <div class="card-body">
+                <p class="card-text small text-muted">Test trained models on new data. Coming soon.</p>
             </div>
         </div>
     </div>

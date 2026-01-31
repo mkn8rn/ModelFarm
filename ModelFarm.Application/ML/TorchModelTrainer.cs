@@ -165,6 +165,7 @@ public sealed class TorchModelTrainer : IModelTrainer
         int checkpointIntervalEpochs,
         IProgress<TrainingProgress>? progress = null,
         Func<int, double, Task>? onCheckpointSaved = null,
+        Func<bool>? isPaused = null,
         CancellationToken cancellationToken = default)
     {
         var sw = Stopwatch.StartNew();
@@ -232,6 +233,13 @@ public sealed class TorchModelTrainer : IModelTrainer
 
         for (int epoch = startEpoch; epoch <= config.MaxEpochs; epoch++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Check for pause - wait until unpaused
+            while (isPaused?.Invoke() == true && !cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(100, cancellationToken);
+            }
             cancellationToken.ThrowIfCancellationRequested();
 
             var epochSw = Stopwatch.StartNew();

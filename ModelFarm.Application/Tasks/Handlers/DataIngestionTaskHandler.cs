@@ -32,6 +32,13 @@ public sealed class DataIngestionTaskHandler : IBackgroundTaskHandler
         var recordCount = 0;
         DateTime? firstTimestamp = null;
         DateTime? lastTimestamp = null;
+        
+        // Statistics tracking
+        decimal? highestPrice = null;
+        decimal? lowestPrice = null;
+        decimal totalVolume = 0;
+        int totalTrades = 0;
+        var sampleRecords = new List<KlineSample>(10);
 
         // Report initial progress
         progress.Report(new TaskProgressUpdate
@@ -63,8 +70,31 @@ public sealed class DataIngestionTaskHandler : IBackgroundTaskHandler
             internalProgress,
             cancellationToken))
         {
-            firstTimestamp ??= DateTimeOffset.FromUnixTimeMilliseconds(kline.OpenTime).UtcDateTime;
+            var openTime = DateTimeOffset.FromUnixTimeMilliseconds(kline.OpenTime).UtcDateTime;
+            firstTimestamp ??= openTime;
             lastTimestamp = DateTimeOffset.FromUnixTimeMilliseconds(kline.CloseTime).UtcDateTime;
+            
+            // Track statistics
+            if (!highestPrice.HasValue || kline.High > highestPrice)
+                highestPrice = kline.High;
+            if (!lowestPrice.HasValue || kline.Low < lowestPrice)
+                lowestPrice = kline.Low;
+            totalVolume += kline.Volume;
+            totalTrades += kline.NumberOfTrades;
+            
+            // Collect first 10 records as samples
+            if (sampleRecords.Count < 10)
+            {
+                sampleRecords.Add(new KlineSample
+                {
+                    OpenTimeUtc = openTime,
+                    Open = kline.Open,
+                    High = kline.High,
+                    Low = kline.Low,
+                    Close = kline.Close,
+                    Volume = kline.Volume
+                });
+            }
         }
 
         stopwatch.Stop();
@@ -74,7 +104,12 @@ public sealed class DataIngestionTaskHandler : IBackgroundTaskHandler
             TotalRecords = recordCount,
             FirstTimestampUtc = firstTimestamp ?? parameters.StartTimeUtc,
             LastTimestampUtc = lastTimestamp ?? parameters.EndTimeUtc,
-            Duration = stopwatch.Elapsed
+            Duration = stopwatch.Elapsed,
+            HighestPrice = highestPrice,
+            LowestPrice = lowestPrice,
+            TotalVolume = totalVolume,
+            TotalTrades = totalTrades,
+            SampleRecords = sampleRecords
         };
 
         // Store the result in the task
