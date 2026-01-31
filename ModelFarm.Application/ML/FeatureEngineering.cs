@@ -1,3 +1,4 @@
+using System.Buffers;
 using ModelFarm.Contracts.MarketData;
 using ModelFarm.Contracts.Training;
 
@@ -6,6 +7,7 @@ namespace ModelFarm.Application.ML;
 /// <summary>
 /// Feature engineering for quant trading models.
 /// Creates lag features and calculates log returns similar to the Python notebook implementation.
+/// Memory-optimized: uses ArrayPool, stackalloc, and avoids LINQ allocations.
 /// </summary>
 public static class FeatureEngineering
 {
@@ -14,10 +16,6 @@ public static class FeatureEngineering
     /// This mirrors the feature generation in the quant trading notebook.
     /// Memory-optimized: calculates log returns incrementally without storing full array.
     /// </summary>
-    /// <param name="klines">Raw kline/candlestick data</param>
-    /// <param name="maxLags">Number of lagged features to create</param>
-    /// <param name="forecastHorizon">How many steps ahead to predict</param>
-    /// <returns>Prepared training data with features and targets</returns>
     public static TrainingData PrepareTrainingData(
         IReadOnlyList<Kline> klines,
         int maxLags = 4,
@@ -28,62 +26,83 @@ public static class FeatureEngineering
             throw new ArgumentException($"Need at least {maxLags + forecastHorizon + 1} data points");
 
         // Pre-calculate expected sample count to avoid list resizing
-        var expectedSamples = klines.Count - maxLags - forecastHorizon;
-        var samples = new List<TrainingSample>(expectedSamples);
+        int expectedSamples = klines.Count - maxLags - forecastHorizon;
+        List<TrainingSample> samples = new(expectedSamples);
 
         // Keep a rolling window of log returns to avoid storing the full array
-        // We need maxLags + forecastHorizon log returns in the window
-        var windowSize = maxLags + forecastHorizon;
-        var logReturnWindow = new float[windowSize];
-        var windowIndex = 0;
-        var filledCount = 0;
-
-        // Process klines in a single pass
-        for (int i = 1; i < klines.Count; i++)
+        int windowSize = maxLags + forecastHorizon;
+        
+        // Use stackalloc for small windows, otherwise rent from pool
+        float[]? rentedArray = null;
+        Span<float> logReturnWindow = windowSize <= 64 
+            ? stackalloc float[windowSize] 
+            : (rentedArray = ArrayPool<float>.Shared.Rent(windowSize)).AsSpan(0, windowSize);
+        
+        try
         {
-            // Calculate current log return
-            var logReturn = (float)Math.Log((double)(klines[i].Close / klines[i - 1].Close));
-            
-            // Store in circular buffer
-            logReturnWindow[windowIndex] = logReturn;
-            windowIndex = (windowIndex + 1) % windowSize;
-            filledCount++;
+            int windowIndex = 0;
+            int filledCount = 0;
 
-            // Once we have enough history, start creating samples
-            if (filledCount >= windowSize)
+            // Process klines in a single pass
+            int klineCount = klines.Count;
+            for (int i = 1; i < klineCount; i++)
             {
-                var features = new float[maxLags];
+                // Calculate current log return
+                float logReturn = (float)Math.Log((double)(klines[i].Close / klines[i - 1].Close));
                 
-                // Extract lag features from circular buffer
-                // The most recent log return is at (windowIndex - 1), going backwards
-                for (int lag = 0; lag < maxLags; lag++)
+                // Store in circular buffer
+                logReturnWindow[windowIndex] = logReturn;
+                windowIndex = (windowIndex + 1) % windowSize;
+                filledCount++;
+
+                // Once we have enough history, start creating samples
+                if (filledCount >= windowSize)
                 {
-                    // lag 0 = 1 period ago, lag 1 = 2 periods ago, etc.
-                    var idx = (windowIndex - forecastHorizon - lag - 1 + windowSize) % windowSize;
-                    features[lag] = logReturnWindow[idx];
+                    float[] features = new float[maxLags];
+                    
+                    // Extract lag features from circular buffer
+                    for (int lag = 0; lag < maxLags; lag++)
+                    {
+                        int idx = (windowIndex - forecastHorizon - lag - 1 + windowSize) % windowSize;
+                        features[lag] = logReturnWindow[idx];
+                    }
+
+                    // Target is the most recent log return
+                    int targetIdx = (windowIndex - 1 + windowSize) % windowSize;
+                    float target = logReturnWindow[targetIdx];
+
+                    // The corresponding kline index for this sample
+                    int klineIdx = i - forecastHorizon + 1;
+                    
+                    samples.Add(new TrainingSample
+                    {
+                        Timestamp = klines[klineIdx].OpenTimeUtc,
+                        Features = features,
+                        Target = target,
+                        ClosePrice = (float)klines[klineIdx].Close
+                    });
                 }
-
-                // Target is the most recent log return (forecastHorizon - 1 positions back from window end)
-                var targetIdx = (windowIndex - 1 + windowSize) % windowSize;
-                var target = logReturnWindow[targetIdx];
-
-                // The corresponding kline index for this sample
-                var klineIdx = i - forecastHorizon + 1;
-                
-                samples.Add(new TrainingSample
-                {
-                    Timestamp = klines[klineIdx].OpenTimeUtc,
-                    Features = features,
-                    Target = target,
-                    ClosePrice = (float)klines[klineIdx].Close
-                });
             }
+        }
+        finally
+        {
+            if (rentedArray is not null)
+            {
+                ArrayPool<float>.Shared.Return(rentedArray);
+            }
+        }
+
+        // Build feature names without LINQ
+        string[] featureNames = new string[maxLags];
+        for (int i = 0; i < maxLags; i++)
+        {
+            featureNames[i] = $"LogReturn_Lag{i + 1}";
         }
 
         return new TrainingData
         {
             Samples = samples,
-            FeatureNames = Enumerable.Range(1, maxLags).Select(i => $"LogReturn_Lag{i}").ToArray(),
+            FeatureNames = featureNames,
             MaxLags = maxLags,
             ForecastHorizon = forecastHorizon
         };
@@ -108,7 +127,7 @@ public static class FeatureEngineering
 
     /// <summary>
     /// Splits data into train/validation/test sets maintaining temporal order.
-    /// Memory-optimized: uses ArraySegment-like slicing where possible.
+    /// Memory-optimized: uses List.GetRange for efficient slicing.
     /// </summary>
     public static (TrainingData train, TrainingData validation, TrainingData test) SplitData(
         TrainingData data,
@@ -123,24 +142,24 @@ public static class FeatureEngineering
         if (validationSplit + testSplit >= 1)
             throw new ArgumentException($"Validation ({validationSplit}) + test ({testSplit}) splits must sum to less than 1");
 
-        var totalSamples = data.Samples.Count;
+        int totalSamples = data.Samples.Count;
         
         if (totalSamples < 10)
             throw new InvalidOperationException($"Not enough data samples ({totalSamples}). Need at least 10 samples for train/validation/test split.");
 
-        var testSize = Math.Max(1, (int)(totalSamples * testSplit));
-        var validationSize = Math.Max(1, (int)(totalSamples * validationSplit));
-        var trainSize = totalSamples - testSize - validationSize;
+        int testSize = Math.Max(1, (int)(totalSamples * testSplit));
+        int validationSize = Math.Max(1, (int)(totalSamples * validationSplit));
+        int trainSize = totalSamples - testSize - validationSize;
 
         if (trainSize < 5)
             throw new InvalidOperationException($"Not enough training samples ({trainSize}). Dataset has {totalSamples} samples but validation ({validationSplit:P0}) and test ({testSplit:P0}) splits leave insufficient data for training.");
 
-        // Use GetRange for more efficient list slicing (avoids LINQ overhead)
-        var samples = data.Samples as List<TrainingSample> ?? data.Samples.ToList();
+        // Use GetRange for efficient list slicing (avoids LINQ overhead)
+        List<TrainingSample> samples = data.Samples as List<TrainingSample> ?? new List<TrainingSample>(data.Samples);
         
-        var trainSamples = samples.GetRange(0, trainSize);
-        var validationSamples = samples.GetRange(trainSize, validationSize);
-        var testSamples = samples.GetRange(trainSize + validationSize, testSize);
+        List<TrainingSample> trainSamples = samples.GetRange(0, trainSize);
+        List<TrainingSample> validationSamples = samples.GetRange(trainSize, validationSize);
+        List<TrainingSample> testSamples = samples.GetRange(trainSize + validationSize, testSize);
 
         return (
             data with { Samples = trainSamples },
@@ -159,23 +178,35 @@ public static class FeatureEngineering
         if (data.Samples.Count == 0)
             throw new InvalidOperationException("Cannot normalize empty dataset");
 
-        var featureCount = data.FeatureNames.Length;
-        var sampleCount = data.Samples.Count;
+        int featureCount = data.FeatureNames.Length;
+        int sampleCount = data.Samples.Count;
+        IReadOnlyList<TrainingSample> samples = data.Samples;
 
-        // Use Welford's online algorithm for numerically stable mean/variance calculation
-        var means = new double[featureCount];
-        var m2 = new double[featureCount]; // Sum of squared differences from mean
-        var stds = new double[featureCount];
+        // Use stackalloc for small feature counts, otherwise allocate
+        double[]? meansArray = null;
+        double[]? m2Array = null;
+        double[]? stdsArray = null;
+        
+        Span<double> means = featureCount <= 32 
+            ? stackalloc double[featureCount] 
+            : (meansArray = new double[featureCount]);
+        Span<double> m2 = featureCount <= 32 
+            ? stackalloc double[featureCount] 
+            : (m2Array = new double[featureCount]);
+        Span<double> stds = featureCount <= 32 
+            ? stackalloc double[featureCount] 
+            : (stdsArray = new double[featureCount]);
 
-        // Single pass to calculate mean and variance
+        // Single pass to calculate mean and variance using Welford's algorithm
         for (int n = 0; n < sampleCount; n++)
         {
-            var sample = data.Samples[n];
+            float[] sampleFeatures = samples[n].Features;
+            double nPlus1 = n + 1;
             for (int f = 0; f < featureCount; f++)
             {
-                var x = sample.Features[f];
-                var delta = x - means[f];
-                means[f] += delta / (n + 1);
+                double x = sampleFeatures[f];
+                double delta = x - means[f];
+                means[f] += delta / nPlus1;
                 m2[f] += delta * (x - means[f]);
             }
         }
@@ -188,11 +219,11 @@ public static class FeatureEngineering
         }
 
         // Normalize samples - create new feature arrays
-        var normalizedSamples = new List<TrainingSample>(sampleCount);
+        List<TrainingSample> normalizedSamples = new(sampleCount);
         for (int i = 0; i < sampleCount; i++)
         {
-            var s = data.Samples[i];
-            var normalizedFeatures = new float[featureCount];
+            TrainingSample s = samples[i];
+            float[] normalizedFeatures = new float[featureCount];
             for (int f = 0; f < featureCount; f++)
             {
                 normalizedFeatures[f] = (float)((s.Features[f] - means[f]) / stds[f]);
@@ -200,9 +231,13 @@ public static class FeatureEngineering
             normalizedSamples.Add(s with { Features = normalizedFeatures });
         }
 
+        // Copy stats to arrays for storage
+        double[] finalMeans = meansArray ?? means.ToArray();
+        double[] finalStds = stdsArray ?? stds.ToArray();
+
         return (
             data with { Samples = normalizedSamples },
-            new NormalizationStats { Means = means, StandardDeviations = stds }
+            new NormalizationStats { Means = finalMeans, StandardDeviations = finalStds }
         );
     }
 
@@ -211,17 +246,20 @@ public static class FeatureEngineering
     /// </summary>
     public static TrainingData ApplyNormalization(TrainingData data, NormalizationStats stats)
     {
-        var featureCount = stats.Means.Length;
-        var sampleCount = data.Samples.Count;
+        int featureCount = stats.Means.Length;
+        int sampleCount = data.Samples.Count;
+        IReadOnlyList<TrainingSample> samples = data.Samples;
+        double[] means = stats.Means;
+        double[] stds = stats.StandardDeviations;
         
-        var normalizedSamples = new List<TrainingSample>(sampleCount);
+        List<TrainingSample> normalizedSamples = new(sampleCount);
         for (int i = 0; i < sampleCount; i++)
         {
-            var s = data.Samples[i];
-            var normalizedFeatures = new float[featureCount];
+            TrainingSample s = samples[i];
+            float[] normalizedFeatures = new float[featureCount];
             for (int f = 0; f < featureCount; f++)
             {
-                normalizedFeatures[f] = (float)((s.Features[f] - stats.Means[f]) / stats.StandardDeviations[f]);
+                normalizedFeatures[f] = (float)((s.Features[f] - means[f]) / stds[f]);
             }
             normalizedSamples.Add(s with { Features = normalizedFeatures });
         }

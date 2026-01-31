@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using ModelFarm.Contracts.Training;
 using TorchSharp;
@@ -35,6 +36,17 @@ public sealed class TorchModelTrainer : IModelTrainer
         }
     }
 
+    /// <summary>
+    /// Synchronizes GPU operations if CUDA is available.
+    /// </summary>
+    private void SyncGpu()
+    {
+        if (_device.type == DeviceType.CUDA)
+        {
+            torch.cuda.synchronize();
+        }
+    }
+
     public async Task<ModelTrainingResult> TrainAsync(
         TrainingData trainData,
         TrainingData validationData,
@@ -43,9 +55,8 @@ public sealed class TorchModelTrainer : IModelTrainer
         CancellationToken cancellationToken = default)
     {
         var sw = Stopwatch.StartNew();
-        var epochHistory = new List<EpochMetrics>();
-
         var featureCount = trainData.FeatureNames.Length;
+        var epochsTrained = 0;
         
         // Convert data to tensors
         var (trainFeatures, trainTargets) = CreateTensors(trainData);
@@ -68,39 +79,28 @@ public sealed class TorchModelTrainer : IModelTrainer
         for (int epoch = 1; epoch <= config.MaxEpochs; epoch++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            epochsTrained = epoch;
 
-            var epochSw = Stopwatch.StartNew();
-
-            // Training step
+            // Training step - use 'using' to dispose intermediate tensors immediately
             model.train();
             optimizer.zero_grad();
             
-            var trainPredictions = model.forward(trainFeatures);
-            var trainLoss = lossFunction.forward(trainPredictions, trainTargets);
-            trainLoss.backward();
-            optimizer.step();
-
-            var trainingLoss = trainLoss.item<float>();
+            using (var trainPredictions = model.forward(trainFeatures))
+            using (var trainLoss = lossFunction.forward(trainPredictions, trainTargets))
+            {
+                trainLoss.backward();
+                optimizer.step();
+                finalTrainingLoss = trainLoss.item<float>();
+            }
 
             // Validation step
             model.eval();
             using (torch.no_grad())
             {
-                var valPredictions = model.forward(valFeatures);
-                var valLoss = lossFunction.forward(valPredictions, valTargets);
+                using var valPredictions = model.forward(valFeatures);
+                using var valLoss = lossFunction.forward(valPredictions, valTargets);
                 finalValidationLoss = valLoss.item<float>();
             }
-
-            epochSw.Stop();
-            finalTrainingLoss = trainingLoss;
-
-            epochHistory.Add(new EpochMetrics
-            {
-                Epoch = epoch,
-                TrainingLoss = trainingLoss,
-                ValidationLoss = finalValidationLoss,
-                Duration = epochSw.Elapsed
-            });
 
             if (finalValidationLoss < bestValidationLoss)
             {
@@ -117,11 +117,11 @@ public sealed class TorchModelTrainer : IModelTrainer
             {
                 CurrentEpoch = epoch,
                 TotalEpochs = config.MaxEpochs,
-                TrainingLoss = trainingLoss,
+                TrainingLoss = finalTrainingLoss,
                 ValidationLoss = finalValidationLoss,
                 BestValidationLoss = bestValidationLoss,
                 EpochsSinceImprovement = epochsSinceImprovement,
-                Message = $"Epoch {epoch}/{config.MaxEpochs} - Train Loss: {trainingLoss:F6}, Val Loss: {finalValidationLoss:F6}"
+                Message = $"Epoch {epoch}/{config.MaxEpochs} - Train Loss: {finalTrainingLoss:F6}, Val Loss: {finalValidationLoss:F6}"
             });
 
             // Early stopping
@@ -150,22 +150,23 @@ public sealed class TorchModelTrainer : IModelTrainer
             config.ModelType,
             trainData.FeatureNames);
 
-        // Dispose tensors
+        // Dispose tensors and sync GPU
         trainFeatures.Dispose();
         trainTargets.Dispose();
         valFeatures.Dispose();
         valTargets.Dispose();
+        SyncGpu();
 
         return new ModelTrainingResult
         {
             Model = trainedModel,
-            EpochsTrained = epochHistory.Count,
+            EpochsTrained = epochsTrained,
             FinalTrainingLoss = finalTrainingLoss,
             FinalValidationLoss = finalValidationLoss,
             BestValidationLoss = bestValidationLoss,
             EarlyStopTriggered = earlyStopTriggered,
             TrainingDuration = sw.Elapsed,
-            EpochHistory = epochHistory
+            EpochHistory = [] // Not stored - would require database/file storage for real use
         };
     }
 
@@ -184,8 +185,8 @@ public sealed class TorchModelTrainer : IModelTrainer
         CancellationToken cancellationToken = default)
     {
         var sw = Stopwatch.StartNew();
-        var epochHistory = new List<EpochMetrics>();
         var featureCount = trainData.FeatureNames.Length;
+        var epochsTrained = 0;
 
         // Convert data to tensors
         var (trainFeatures, trainTargets) = CreateTensors(trainData);
@@ -249,6 +250,7 @@ public sealed class TorchModelTrainer : IModelTrainer
         for (int epoch = startEpoch; epoch <= config.MaxEpochs; epoch++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            epochsTrained = epoch;
 
             // Check for pause - wait until unpaused
             while (isPaused?.Invoke() == true && !cancellationToken.IsCancellationRequested)
@@ -257,38 +259,26 @@ public sealed class TorchModelTrainer : IModelTrainer
             }
             cancellationToken.ThrowIfCancellationRequested();
 
-            var epochSw = Stopwatch.StartNew();
-
-            // Training step
+            // Training step - use 'using' to dispose intermediate tensors immediately
             model.train();
             optimizer.zero_grad();
 
-            var trainPredictions = model.forward(trainFeatures);
-            var trainLoss = lossFunction.forward(trainPredictions, trainTargets);
-            trainLoss.backward();
-            optimizer.step();
-
-            var trainingLoss = trainLoss.item<float>();
+            using (var trainPredictions = model.forward(trainFeatures))
+            using (var trainLoss = lossFunction.forward(trainPredictions, trainTargets))
+            {
+                trainLoss.backward();
+                optimizer.step();
+                finalTrainingLoss = trainLoss.item<float>();
+            }
 
             // Validation step
             model.eval();
             using (torch.no_grad())
             {
-                var valPredictions = model.forward(valFeatures);
-                var valLoss = lossFunction.forward(valPredictions, valTargets);
+                using var valPredictions = model.forward(valFeatures);
+                using var valLoss = lossFunction.forward(valPredictions, valTargets);
                 finalValidationLoss = valLoss.item<float>();
             }
-
-            epochSw.Stop();
-            finalTrainingLoss = trainingLoss;
-
-            epochHistory.Add(new EpochMetrics
-            {
-                Epoch = epoch,
-                TrainingLoss = trainingLoss,
-                ValidationLoss = finalValidationLoss,
-                Duration = epochSw.Elapsed
-            });
 
             if (finalValidationLoss < bestValidationLoss)
             {
@@ -305,11 +295,11 @@ public sealed class TorchModelTrainer : IModelTrainer
             {
                 CurrentEpoch = epoch,
                 TotalEpochs = config.MaxEpochs,
-                TrainingLoss = trainingLoss,
+                TrainingLoss = finalTrainingLoss,
                 ValidationLoss = finalValidationLoss,
                 BestValidationLoss = bestValidationLoss,
                 EpochsSinceImprovement = epochsSinceImprovement,
-                Message = $"Epoch {epoch}/{config.MaxEpochs} - Train Loss: {trainingLoss:F6}, Val Loss: {finalValidationLoss:F6}"
+                Message = $"Epoch {epoch}/{config.MaxEpochs} - Train Loss: {finalTrainingLoss:F6}, Val Loss: {finalValidationLoss:F6}"
             });
 
             // Save checkpoint periodically (if enabled)
@@ -365,22 +355,23 @@ public sealed class TorchModelTrainer : IModelTrainer
             config.ModelType,
             trainData.FeatureNames);
 
-        // Dispose tensors
+        // Dispose tensors and sync GPU
         trainFeatures.Dispose();
         trainTargets.Dispose();
         valFeatures.Dispose();
         valTargets.Dispose();
+        SyncGpu();
 
         return new ModelTrainingResult
         {
             Model = trainedModel,
-            EpochsTrained = epochHistory.Count + (resumeFromCheckpoint?.Epoch ?? 0),
+            EpochsTrained = epochsTrained + (resumeFromCheckpoint?.Epoch ?? 0),
             FinalTrainingLoss = finalTrainingLoss,
             FinalValidationLoss = finalValidationLoss,
             BestValidationLoss = bestValidationLoss,
             EarlyStopTriggered = earlyStopTriggered,
             TrainingDuration = accumulatedDuration + sw.Elapsed,
-            EpochHistory = epochHistory
+            EpochHistory = [] // Not stored - would require database/file storage for real use
         };
     }
 
@@ -446,44 +437,51 @@ public sealed class TorchModelTrainer : IModelTrainer
 
     private (Tensor features, Tensor targets) CreateTensors(TrainingData data)
     {
-        var featureCount = data.FeatureNames.Length;
-        var sampleCount = data.Samples.Count;
+        int featureCount = data.FeatureNames.Length;
+        int sampleCount = data.Samples.Count;
+        int featuresLength = sampleCount * featureCount;
 
-        // Pre-allocate arrays
-        var featuresArray = new float[sampleCount * featureCount];
-        var targetsArray = new float[sampleCount];
+        // Rent arrays from pool instead of allocating new ones
+        float[] featuresArray = ArrayPool<float>.Shared.Rent(featuresLength);
+        float[] targetsArray = ArrayPool<float>.Shared.Rent(sampleCount);
 
-        // Copy features directly - now that Features is float[], we can use BlockCopy for speed
-        for (int i = 0; i < sampleCount; i++)
+        try
         {
-            var sample = data.Samples[i];
-            Buffer.BlockCopy(sample.Features, 0, featuresArray, i * featureCount * sizeof(float), featureCount * sizeof(float));
-            targetsArray[i] = sample.Target;
+            // Copy features directly using BlockCopy for speed
+            IReadOnlyList<TrainingSample> samples = data.Samples;
+            for (int i = 0; i < sampleCount; i++)
+            {
+                TrainingSample sample = samples[i];
+                Buffer.BlockCopy(sample.Features, 0, featuresArray, i * featureCount * sizeof(float), featureCount * sizeof(float));
+                targetsArray[i] = sample.Target;
+            }
+
+            // Create tensors - use only the portion of the rented arrays we need
+            // TorchSharp tensor() copies the data, so we can return arrays to pool after
+            Tensor featuresTensor = torch.tensor(featuresArray.AsSpan(0, featuresLength).ToArray(), dtype: ScalarType.Float32)
+                .reshape(sampleCount, featureCount);
+            Tensor targetsTensor = torch.tensor(targetsArray.AsSpan(0, sampleCount).ToArray(), dtype: ScalarType.Float32)
+                .reshape(sampleCount, 1);
+
+            // Move to device (GPU if available)
+            Tensor features = featuresTensor.to(_device);
+            Tensor targets = targetsTensor.to(_device);
+
+            // Dispose CPU tensors if we moved to GPU
+            if (_device.type != DeviceType.CPU)
+            {
+                featuresTensor.Dispose();
+                targetsTensor.Dispose();
+            }
+
+            return (features, targets);
         }
-
-        // Create tensors on CPU first, then move to device
-        // This is more memory efficient than creating directly on GPU
-        var featuresTensor = torch.tensor(featuresArray, dtype: ScalarType.Float32)
-            .reshape(sampleCount, featureCount);
-        var targetsTensor = torch.tensor(targetsArray, dtype: ScalarType.Float32)
-            .reshape(sampleCount, 1);
-
-        // Clear managed arrays to help GC
-        Array.Clear(featuresArray);
-        Array.Clear(targetsArray);
-
-        // Move to device (GPU if available)
-        var features = featuresTensor.to(_device);
-        var targets = targetsTensor.to(_device);
-
-        // Dispose CPU tensors if we moved to GPU
-        if (_device.type != DeviceType.CPU)
+        finally
         {
-            featuresTensor.Dispose();
-            targetsTensor.Dispose();
+            // Return arrays to pool
+            ArrayPool<float>.Shared.Return(featuresArray);
+            ArrayPool<float>.Shared.Return(targetsArray);
         }
-
-        return (features, targets);
     }
 
     private Module<Tensor, Tensor> CreateModel(ModelType modelType, int featureCount, TrainingConfiguration config)
@@ -495,6 +493,8 @@ public sealed class TorchModelTrainer : IModelTrainer
             ModelType.MLP => new MLPModel(featureCount, config.HiddenLayerSizes),
             _ => new LinearRegressionModel(featureCount)
         };
+        
+        
         
         
         // Move model to the selected device (GPU if available)
@@ -632,28 +632,34 @@ internal sealed class TorchTrainedModel : ITrainedModel
 
     public float[] PredictBatch(IReadOnlyList<float[]> features)
     {
-        using var _ = torch.no_grad();
-        var featureCount = features[0].Length;
-        var sampleCount = features.Count;
+        using IDisposable _ = torch.no_grad();
+        int featureCount = features[0].Length;
+        int sampleCount = features.Count;
+        int flatLength = sampleCount * featureCount;
         
-        var flatArray = new float[sampleCount * featureCount];
-        for (int i = 0; i < sampleCount; i++)
+        // Rent array from pool
+        float[] flatArray = ArrayPool<float>.Shared.Rent(flatLength);
+        try
         {
-            Buffer.BlockCopy(features[i], 0, flatArray, i * featureCount * sizeof(float), featureCount * sizeof(float));
-        }
+            for (int i = 0; i < sampleCount; i++)
+            {
+                Buffer.BlockCopy(features[i], 0, flatArray, i * featureCount * sizeof(float), featureCount * sizeof(float));
+            }
 
-        using var input = torch.tensor(flatArray, dtype: ScalarType.Float32)
-            .reshape(sampleCount, featureCount);
-        using var output = _model.forward(input);
-        
-        var result = new float[sampleCount];
-        var outputData = output.data<float>().ToArray();
-        Array.Copy(outputData, result, sampleCount);
-        
-        // Clear flatArray to help GC
-        Array.Clear(flatArray);
-        
-        return result;
+            using Tensor input = torch.tensor(flatArray.AsSpan(0, flatLength).ToArray(), dtype: ScalarType.Float32)
+                .reshape(sampleCount, featureCount);
+            using Tensor output = _model.forward(input);
+            
+            float[] result = new float[sampleCount];
+            float[] outputData = output.data<float>().ToArray();
+            Array.Copy(outputData, result, sampleCount);
+            
+            return result;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(flatArray);
+        }
     }
 
     public async Task SaveAsync(string path, CancellationToken cancellationToken = default)

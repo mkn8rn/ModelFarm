@@ -33,14 +33,15 @@ public sealed class BacktestEngine
         TradingEnvironmentConfig config,
         double annualizationFactor)
     {
-        if (predictions.Count == 0)
+        int predictionCount = predictions.Count;
+        if (predictionCount == 0)
             return CreateEmptyResult(config.InitialCapital);
 
         // Calculate downsampling rate for equity curve
-        var sampleEveryN = Math.Max(1, predictions.Count / MaxEquityCurvePoints);
+        int sampleEveryN = Math.Max(1, predictionCount / MaxEquityCurvePoints);
         
-        var trades = new List<Trade>();
-        var equityCurve = new List<EquityPoint>(Math.Min(predictions.Count, MaxEquityCurvePoints + 1));
+        List<Trade> trades = new();
+        List<EquityPoint> equityCurve = new(Math.Min(predictionCount, MaxEquityCurvePoints + 1));
         
         // Use running statistics for daily returns instead of storing all
         double sumReturns = 0;
@@ -51,8 +52,8 @@ public sealed class BacktestEngine
         decimal totalFees = 0;
 
         // Use taker fee rate for market orders (most common in algorithmic trading)
-        var feeRate = (double)config.Fees.TakerFeeRate;
-        var maxPositionSize = (double)config.MaxPositionSizeRatio;
+        double feeRate = (double)config.Fees.TakerFeeRate;
+        double maxPositionSize = (double)config.MaxPositionSizeRatio;
 
         double equity = (double)config.InitialCapital;
         double position = 0; // Position size in base currency
@@ -64,14 +65,14 @@ public sealed class BacktestEngine
 
         equityCurve.Add(new EquityPoint { Timestamp = predictions[0].Timestamp, Equity = equity });
 
-        for (int i = 0; i < predictions.Count; i++)
+        for (int i = 0; i < predictionCount; i++)
         {
-            var prediction = predictions[i];
-            var predictedReturn = prediction.Predicted;
-            var currentPrice = (double)prediction.ClosePrice;
+            PredictionResult prediction = predictions[i];
+            float predictedReturn = prediction.Predicted;
+            double currentPrice = (double)prediction.ClosePrice;
 
             // Trading signal: buy if predicted return > 0, sell if < 0
-            var signal = predictedReturn > 0 ? TradeSignal.Buy : TradeSignal.Sell;
+            TradeSignal signal = predictedReturn > 0 ? TradeSignal.Buy : TradeSignal.Sell;
 
             // Execute trades based on signal
             if (signal == TradeSignal.Buy && position <= 0)
@@ -224,26 +225,48 @@ public sealed class BacktestEngine
             sumReturns, sumSquaredReturns, sumNegativeSquaredReturns, 
             returnCount, negativeReturnCount, annualizationFactor);
 
-        // Win/loss statistics
-        var winningTrades = trades.Where(t => t.PnL > 0).ToList();
-        var losingTrades = trades.Where(t => t.PnL < 0).ToList();
-        var winRate = trades.Count > 0 ? (double)winningTrades.Count / trades.Count : 0;
+        // Win/loss statistics - single pass instead of multiple LINQ queries
+        int winningCount = 0;
+        int losingCount = 0;
+        double grossProfit = 0;
+        double grossLoss = 0;
+        double sumWinPnl = 0;
+        double sumLossPnl = 0;
+        
+        int tradeCount = trades.Count;
+        for (int i = 0; i < tradeCount; i++)
+        {
+            Trade trade = trades[i];
+            if (trade.PnL > 0)
+            {
+                winningCount++;
+                grossProfit += trade.PnL;
+                sumWinPnl += trade.PnL;
+            }
+            else if (trade.PnL < 0)
+            {
+                losingCount++;
+                grossLoss += Math.Abs(trade.PnL);
+                sumLossPnl += trade.PnL;
+            }
+        }
 
-        // Profit factor
-        var grossProfit = winningTrades.Sum(t => t.PnL);
-        var grossLoss = Math.Abs(losingTrades.Sum(t => t.PnL));
-        var profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? double.PositiveInfinity : 0;
+        double winRate = tradeCount > 0 ? (double)winningCount / tradeCount : 0;
+        double profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? double.PositiveInfinity : 0;
 
         // Calmar ratio
-        var calmarRatio = maxDrawdown > 0 ? annualizedReturn / maxDrawdown : 0;
+        double calmarRatio = maxDrawdown > 0 ? annualizedReturn / maxDrawdown : 0;
 
         // Consecutive wins/losses
-        var (maxConsecutiveWins, maxConsecutiveLosses) = CalculateConsecutiveStreaks(trades);
+        (int maxConsecutiveWins, int maxConsecutiveLosses) = CalculateConsecutiveStreaks(trades);
 
-        // Average holding period
-        var avgHoldingPeriod = trades.Count > 0
-            ? TimeSpan.FromTicks((long)trades.Average(t => (t.ExitTime - t.EntryTime).Ticks))
-            : TimeSpan.Zero;
+        // Average holding period - single pass
+        long totalTicks = 0;
+        for (int i = 0; i < tradeCount; i++)
+        {
+            totalTicks += (trades[i].ExitTime - trades[i].EntryTime).Ticks;
+        }
+        TimeSpan avgHoldingPeriod = tradeCount > 0 ? TimeSpan.FromTicks(totalTicks / tradeCount) : TimeSpan.Zero;
 
         return new BacktestResult
         {
@@ -257,11 +280,11 @@ public sealed class BacktestEngine
                 CalmarRatio = calmarRatio,
                 WinRate = winRate,
                 ProfitFactor = profitFactor,
-                TotalTrades = trades.Count,
-                WinningTrades = winningTrades.Count,
-                LosingTrades = losingTrades.Count,
-                AverageWin = winningTrades.Count > 0 ? winningTrades.Average(t => t.PnL) : 0,
-                AverageLoss = losingTrades.Count > 0 ? losingTrades.Average(t => t.PnL) : 0,
+                TotalTrades = tradeCount,
+                WinningTrades = winningCount,
+                LosingTrades = losingCount,
+                AverageWin = winningCount > 0 ? sumWinPnl / winningCount : 0,
+                AverageLoss = losingCount > 0 ? sumLossPnl / losingCount : 0,
                 MaxConsecutiveWins = maxConsecutiveWins,
                 MaxConsecutiveLosses = maxConsecutiveLosses,
                 AverageHoldingPeriod = avgHoldingPeriod,

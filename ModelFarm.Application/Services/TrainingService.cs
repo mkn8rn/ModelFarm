@@ -393,9 +393,8 @@ public sealed class TrainingService : ITrainingService
             // Prepare features - uses streaming approach with circular buffer
             var allData = FeatureEngineering.PrepareTrainingData(klines, config.MaxLags, config.ForecastHorizon);
             
-            // Release klines memory immediately after feature extraction
+            // Release klines reference immediately after feature extraction
             klines = null!;
-            GC.Collect(0, GCCollectionMode.Optimized);
             
             await UpdateJobAsync(jobId, job => job with { Message = $"Splitting {allData.Samples.Count} samples into train/val/test..." });
 
@@ -413,11 +412,10 @@ public sealed class TrainingService : ITrainingService
             var normalizedValidation = FeatureEngineering.ApplyNormalization(validationData, normStats);
             var normalizedTest = FeatureEngineering.ApplyNormalization(testData, normStats);
 
-            // Release unnormalized data
+            // Release unnormalized data references
             trainData = null!;
             validationData = null!;
             testData = null!;
-            GC.Collect(0, GCCollectionMode.Optimized);
 
             // Check for existing checkpoint to resume from
             TrainingCheckpoint? checkpoint = null;
@@ -607,6 +605,11 @@ public sealed class TrainingService : ITrainingService
                 await Task.Delay(100, cts.Token);
 
             } while (config.RetryUntilSuccess && state.RetryAttempt < config.MaxRetryAttempts);
+
+            // Release training data references
+            normalizedTrain = null!;
+            normalizedValidation = null!;
+            normalizedTest = null!;
 
             var completionMsg = finalResult!.MeetsRequirements 
                 ? $"Training completed - meets requirements" 
