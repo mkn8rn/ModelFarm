@@ -10,10 +10,12 @@ namespace ModelFarm.Application.ML;
 /// <summary>
 /// TorchSharp implementation of model training for quant trading regression models.
 /// Supports Linear Regression, Gradient Boosting (via ensemble), and MLP.
+/// Automatically uses CUDA GPU if available.
 /// </summary>
 public sealed class TorchModelTrainer : IModelTrainer
 {
     private readonly int? _seed;
+    private readonly Device _device;
 
     public TorchModelTrainer(int? seed = null)
     {
@@ -21,6 +23,15 @@ public sealed class TorchModelTrainer : IModelTrainer
         if (seed.HasValue)
         {
             torch.manual_seed(seed.Value);
+        }
+        
+        // Select best available device: CUDA > CPU
+        _device = torch.cuda.is_available() ? torch.CUDA : torch.CPU;
+        Console.WriteLine($"[TorchModelTrainer] Using device: {_device.type}");
+        
+        if (_device.type == DeviceType.CUDA)
+        {
+            Console.WriteLine($"[TorchModelTrainer] CUDA device count: {torch.cuda.device_count()}");
         }
     }
 
@@ -406,7 +417,7 @@ public sealed class TorchModelTrainer : IModelTrainer
         });
     }
 
-    private static (Tensor features, Tensor targets) CreateTensors(TrainingData data)
+    private (Tensor features, Tensor targets) CreateTensors(TrainingData data)
     {
         var featureCount = data.FeatureNames.Length;
         var sampleCount = data.Samples.Count;
@@ -424,24 +435,32 @@ public sealed class TorchModelTrainer : IModelTrainer
             targetsArray[i] = sample.Target;
         }
 
-        var features = torch.tensor(featuresArray, dtype: ScalarType.Float32).reshape(sampleCount, featureCount);
-        var targets = torch.tensor(targetsArray, dtype: ScalarType.Float32).reshape(sampleCount, 1);
+        var features = torch.tensor(featuresArray, dtype: ScalarType.Float32)
+            .reshape(sampleCount, featureCount)
+            .to(_device);
+        var targets = torch.tensor(targetsArray, dtype: ScalarType.Float32)
+            .reshape(sampleCount, 1)
+            .to(_device);
 
         return (features, targets);
     }
 
-    private static Module<Tensor, Tensor> CreateModel(ModelType modelType, int featureCount, TrainingConfiguration config)
+    private Module<Tensor, Tensor> CreateModel(ModelType modelType, int featureCount, TrainingConfiguration config)
     {
-        return modelType switch
+        Module<Tensor, Tensor> model = modelType switch
         {
             ModelType.LinearRegression => new LinearRegressionModel(featureCount),
             ModelType.GradientBoosting => new GradientBoostingModel(featureCount),
             ModelType.MLP => new MLPModel(featureCount, config.HiddenLayerSizes),
             _ => new LinearRegressionModel(featureCount)
         };
+        
+        // Move model to the selected device (GPU if available)
+        model.to(_device);
+        return model;
     }
 
-    private static Module<Tensor, Tensor> CloneModel(Module<Tensor, Tensor> source, ModelType modelType, int featureCount, TrainingConfiguration config)
+    private Module<Tensor, Tensor> CloneModel(Module<Tensor, Tensor> source, ModelType modelType, int featureCount, TrainingConfiguration config)
     {
         var clone = CreateModel(modelType, featureCount, config);
         clone.load_state_dict(source.state_dict());
@@ -587,6 +606,9 @@ internal sealed class TorchTrainedModel : ITrainedModel
         _model = model;
         _modelType = modelType;
         _featureNames = featureNames;
+        
+        // Move model to CPU for stable inference during backtesting
+        _model.cpu();
         _model.eval();
     }
 
@@ -594,7 +616,8 @@ internal sealed class TorchTrainedModel : ITrainedModel
     {
         using var _ = torch.no_grad();
         var featureArray = features.Select(f => (float)f).ToArray();
-        using var input = torch.tensor(featureArray, dtype: ScalarType.Float32).reshape(1, features.Length);
+        using var input = torch.tensor(featureArray, dtype: ScalarType.Float32)
+            .reshape(1, features.Length);
         using var output = _model.forward(input);
         return output.item<float>();
     }
@@ -614,7 +637,8 @@ internal sealed class TorchTrainedModel : ITrainedModel
             }
         }
 
-        using var input = torch.tensor(flatArray, dtype: ScalarType.Float32).reshape(sampleCount, featureCount);
+        using var input = torch.tensor(flatArray, dtype: ScalarType.Float32)
+            .reshape(sampleCount, featureCount);
         using var output = _model.forward(input);
         
         var result = new float[sampleCount];

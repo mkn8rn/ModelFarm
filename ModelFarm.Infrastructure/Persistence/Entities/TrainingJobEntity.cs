@@ -101,10 +101,16 @@ public sealed class TrainingJobEntity
         CurrentAttempt = job.CurrentAttempt;
         MaxAttempts = job.MaxAttempts;
         IsPaused = job.IsPaused;
-        Message = job.Message;
-        ErrorMessage = job.ErrorMessage;
+        Message = TruncateString(job.Message, 1000);
+        ErrorMessage = TruncateString(job.ErrorMessage, 1000);
         StartedAtUtc = job.StartedAtUtc;
         CompletedAtUtc = job.CompletedAtUtc;
         ResultJson = job.Result != null ? JsonSerializer.Serialize(job.Result) : null;
+    }
+    
+    private static string TruncateString(string? value, int maxLength)
+    {
+        if (value is null) return null!;
+        return value.Length <= maxLength ? value : value[..(maxLength - 3)] + "...";
     }
 }

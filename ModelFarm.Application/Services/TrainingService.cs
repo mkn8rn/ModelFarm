@@ -472,6 +472,7 @@ public sealed class TrainingService : ITrainingService
                 await UpdateJobAsync(jobId, job => job with
                 {
                     Status = TrainingJobStatus.Backtesting,
+                    CurrentEpoch = trainingResult.EpochsTrained,
                     Message = "Running backtest on test data..."
                 });
 
@@ -538,6 +539,7 @@ public sealed class TrainingService : ITrainingService
             await UpdateJobAsync(jobId, job => job with
             {
                 Status = TrainingJobStatus.Completed,
+                CurrentEpoch = finalResult.EpochsTrained,
                 Message = completionMsg,
                 CompletedAtUtc = DateTime.UtcNow,
                 Result = finalResult
