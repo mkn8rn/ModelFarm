@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using ModelFarm.Application;
 using ModelFarm.Application.Services;
@@ -32,7 +33,16 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         options.SlidingExpiration = true;
     });
 
-builder.Services.AddAuthorization();
+// Require authentication by default for all pages
+builder.Services.AddAuthorization(options =>
+{
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+});
+
+// Add HttpContextAccessor for user context service
+builder.Services.AddHttpContextAccessor();
 
 // Add ModelFarm application services (includes Infrastructure)
 builder.Services.AddApplication();
@@ -54,12 +64,16 @@ if (!app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+// Static files must be served before authentication to allow CSS/JS to load on login page
+app.UseStaticFiles();
+
 app.UseRouting();
 
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapStaticAssets();
+app.MapStaticAssets()
+   .AllowAnonymous();
 app.MapRazorPages()
    .WithStaticAssets();
 

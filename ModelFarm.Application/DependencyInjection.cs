@@ -25,6 +25,7 @@ public static class DependencyInjection
         services.AddSingleton<BacktestEngine>();
 
         // Register application services (scoped)
+        services.AddScoped<IUserContextService, UserContextService>();
         services.AddScoped<IIngestionService, IngestionService>();
         services.AddScoped<IExchangeService, ExchangeService>();
         services.AddScoped<IDatasetService, DatasetService>();

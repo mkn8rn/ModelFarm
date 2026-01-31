@@ -16,6 +16,7 @@ public sealed class TrainingService : ITrainingService
     private readonly IModelTrainer _modelTrainer;
     private readonly BacktestEngine _backtestEngine;
     private readonly IDbContextFactory<ApplicationDbContext> _dbContextFactory;
+    private readonly IUserContextService _userContext;
     private readonly CheckpointManager _checkpointManager;
 
     // Runtime state for active jobs (not persisted - only used while training is in progress)
@@ -31,12 +32,14 @@ public sealed class TrainingService : ITrainingService
         IDatasetService datasetService,
         IModelTrainer modelTrainer,
         BacktestEngine backtestEngine,
-        IDbContextFactory<ApplicationDbContext> dbContextFactory)
+        IDbContextFactory<ApplicationDbContext> dbContextFactory,
+        IUserContextService userContext)
     {
         _datasetService = datasetService;
         _modelTrainer = modelTrainer;
         _backtestEngine = backtestEngine;
         _dbContextFactory = dbContextFactory;
+        _userContext = userContext;
         _checkpointManager = new CheckpointManager();
     }
 
@@ -74,6 +77,7 @@ public sealed class TrainingService : ITrainingService
         // Count jobs that are actively training (not waiting for slot)
         return _activeJobs.Values.Count(j => !j.CancellationTokenSource.IsCancellationRequested);
     }
+
 
     // ==================== Configuration Management ====================
 
@@ -115,6 +119,9 @@ public sealed class TrainingService : ITrainingService
         var entity = TrainingConfigurationEntity.FromConfiguration(config);
         db.TrainingConfigurations.Add(entity);
         await db.SaveChangesAsync(cancellationToken);
+
+        // Track ownership
+        await _userContext.CreateOwnershipAsync(ResourceTypes.TrainingConfiguration, config.Id, cancellationToken);
 
         return config;
     }
@@ -243,6 +250,9 @@ public sealed class TrainingService : ITrainingService
             db.TrainingJobs.Add(entity);
             await db.SaveChangesAsync(cancellationToken);
         }
+
+        // Track ownership
+        await _userContext.CreateOwnershipAsync(ResourceTypes.TrainingJob, jobId, cancellationToken);
 
         // Create runtime state for active job
         var runtimeState = new TrainingJobRuntimeState

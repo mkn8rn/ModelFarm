@@ -15,6 +15,7 @@ public sealed class ApplicationDbContext : DbContext
     public DbSet<TrainingJobEntity> TrainingJobs => Set<TrainingJobEntity>();
     public DbSet<ModelTestEntity> ModelTests => Set<ModelTestEntity>();
     public DbSet<UserAccessEntity> UserAccess => Set<UserAccessEntity>();
+    public DbSet<UserOwnershipEntity> UserOwnerships => Set<UserOwnershipEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -88,6 +89,16 @@ public sealed class ApplicationDbContext : DbContext
 
             entity.HasIndex(e => e.UserId);
             entity.HasIndex(e => e.AccessedAtUtc);
+        });
+
+        modelBuilder.Entity<UserOwnershipEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.ResourceType).HasMaxLength(50);
+
+            entity.HasIndex(e => e.UserId);
+            entity.HasIndex(e => new { e.ResourceType, e.ResourceId });
+            entity.HasIndex(e => new { e.UserId, e.ResourceType });
         });
     }
 }

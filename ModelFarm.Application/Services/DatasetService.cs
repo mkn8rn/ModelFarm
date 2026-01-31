@@ -10,11 +10,16 @@ public sealed class DatasetService : IDatasetService
 {
     private readonly IDbContextFactory<DataDbContext> _dbFactory;
     private readonly IIngestionService _ingestionService;
+    private readonly IUserContextService _userContext;
 
-    public DatasetService(IDbContextFactory<DataDbContext> dbFactory, IIngestionService ingestionService)
+    public DatasetService(
+        IDbContextFactory<DataDbContext> dbFactory,
+        IIngestionService ingestionService,
+        IUserContextService userContext)
     {
         _dbFactory = dbFactory;
         _ingestionService = ingestionService;
+        _userContext = userContext;
     }
 
     public async Task<DatasetDefinition> CreateDatasetAsync(CreateDatasetRequest request, CancellationToken cancellationToken = default)
@@ -53,6 +58,9 @@ public sealed class DatasetService : IDatasetService
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
         db.Datasets.Add(DatasetEntity.FromDefinition(dataset));
         await db.SaveChangesAsync(cancellationToken);
+
+        // Track ownership
+        await _userContext.CreateOwnershipAsync(ResourceTypes.Dataset, datasetId, cancellationToken);
 
         return dataset;
     }

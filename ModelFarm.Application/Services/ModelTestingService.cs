@@ -19,6 +19,7 @@ public sealed class ModelTestingService : IModelTestingService
     private readonly IDbContextFactory<ApplicationDbContext> _dbContextFactory;
     private readonly ITrainingService _trainingService;
     private readonly IDatasetService _datasetService;
+    private readonly IUserContextService _userContext;
     private readonly BacktestEngine _backtestEngine;
     private readonly CheckpointManager _checkpointManager;
 
@@ -26,11 +27,13 @@ public sealed class ModelTestingService : IModelTestingService
         IDbContextFactory<ApplicationDbContext> dbContextFactory,
         ITrainingService trainingService,
         IDatasetService datasetService,
+        IUserContextService userContext,
         BacktestEngine backtestEngine)
     {
         _dbContextFactory = dbContextFactory;
         _trainingService = trainingService;
         _datasetService = datasetService;
+        _userContext = userContext;
         _backtestEngine = backtestEngine;
         _checkpointManager = new CheckpointManager();
     }
@@ -152,6 +155,9 @@ public sealed class ModelTestingService : IModelTestingService
             db.ModelTests.Add(ModelTestEntity.FromModelTest(test));
             await db.SaveChangesAsync(cancellationToken);
         }
+
+        // Track ownership
+        await _userContext.CreateOwnershipAsync(ResourceTypes.ModelTest, test.Id, cancellationToken);
 
         try
         {
