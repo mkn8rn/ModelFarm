@@ -54,131 +54,20 @@ public sealed class TorchModelTrainer : IModelTrainer
         IProgress<TrainingProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        var sw = Stopwatch.StartNew();
-        var featureCount = trainData.FeatureNames.Length;
-        var epochsTrained = 0;
-
-        // Load ALL data to GPU once at the start
-        var (trainFeatures, trainTargets) = CreateTensors(trainData);
-        var (valFeatures, valTargets) = CreateTensors(validationData);
-
-        // Create model
-        var model = CreateModel(config.ModelType, featureCount, config);
-
-        // Create optimizer
-        var optimizer = torch.optim.Adam(model.parameters(), lr: config.LearningRate);
-        var lossFunction = nn.MSELoss();
-
-        var bestValidationLoss = double.MaxValue;
-        var epochsSinceImprovement = 0;
-        var earlyStopTriggered = false;
-        Module<Tensor, Tensor>? bestModelState = null;
-        double finalTrainingLoss = 0;
-        double finalValidationLoss = 0;
-
-        // Progress reporting frequency (every 5% or at least every 10 epochs)
-        var progressInterval = Math.Max(1, Math.Min(10, config.MaxEpochs / 20));
-
-        for (int epoch = 1; epoch <= config.MaxEpochs; epoch++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            epochsTrained = epoch;
-
-            // Full-batch training (single forward/backward per epoch - much faster for small models)
-            model.train();
-            optimizer.zero_grad();
-
-            using (var trainPredictions = model.forward(trainFeatures))
-            using (var trainLoss = lossFunction.forward(trainPredictions, trainTargets))
-            {
-                trainLoss.backward();
-                optimizer.step();
-                finalTrainingLoss = trainLoss.item<float>();
-            }
-
-            // Validation step
-            model.eval();
-            using (torch.no_grad())
-            {
-                using var valPredictions = model.forward(valFeatures);
-                using var valLoss = lossFunction.forward(valPredictions, valTargets);
-                finalValidationLoss = valLoss.item<float>();
-            }
-
-            if (finalValidationLoss < bestValidationLoss)
-            {
-                bestValidationLoss = finalValidationLoss;
-                bestModelState?.Dispose();
-                bestModelState = CloneModel(model, config.ModelType, featureCount, config);
-                epochsSinceImprovement = 0;
-            }
-            else
-            {
-                epochsSinceImprovement++;
-            }
-
-            // Report progress less frequently to reduce overhead
-            if (epoch % progressInterval == 0 || epoch == 1 || epoch == config.MaxEpochs)
-            {
-                progress?.Report(new TrainingProgress
-                {
-                    CurrentEpoch = epoch,
-                    TotalEpochs = config.MaxEpochs,
-                    TrainingLoss = finalTrainingLoss,
-                    ValidationLoss = finalValidationLoss,
-                    BestValidationLoss = bestValidationLoss,
-                    EpochsSinceImprovement = epochsSinceImprovement,
-                    Message = $"Epoch {epoch}/{config.MaxEpochs} - Train: {finalTrainingLoss:F6}, Val: {finalValidationLoss:F6}"
-                });
-            }
-
-            // Early stopping
-            if (epochsSinceImprovement >= config.EarlyStoppingPatience)
-            {
-                earlyStopTriggered = true;
-                break;
-            }
-
-            // Yield periodically to allow cancellation
-            if (epoch % 100 == 0)
-            {
-                await Task.Yield();
-            }
-        }
-
-        sw.Stop();
-
-        // Use best model if available
-        var finalModel = bestModelState ?? model;
-        if (bestModelState is not null && bestModelState != model)
-        {
-            model.Dispose();
-        }
-
-        var trainedModel = new TorchTrainedModel(
-            Guid.NewGuid(),
-            finalModel,
-            config.ModelType,
-            trainData.FeatureNames);
-
-        // Dispose tensors and sync GPU
-        trainFeatures.Dispose();
-        trainTargets.Dispose();
-        valFeatures.Dispose();
-        valTargets.Dispose();
-        SyncGpu();
-
-        return new ModelTrainingResult
-        {
-            Model = trainedModel,
-            EpochsTrained = epochsTrained,
-            FinalTrainingLoss = finalTrainingLoss,
-            FinalValidationLoss = finalValidationLoss,
-            BestValidationLoss = bestValidationLoss,
-            EarlyStopTriggered = earlyStopTriggered,
-            TrainingDuration = sw.Elapsed,
-            EpochHistory = []
-        };
+        // Delegate to the main training method with checkpoints disabled
+        return await TrainWithCheckpointsAsync(
+            trainData,
+            validationData,
+            config,
+            checkpointManager: null!,
+            jobId: Guid.Empty,
+            resumeFromCheckpoint: null,
+            normStats: null!,
+            checkpointIntervalEpochs: 0,  // Disables checkpointing
+            progress,
+            onCheckpointSaved: null,
+            isPaused: null,
+            cancellationToken);
     }
 
     public async Task<ModelTrainingResult> TrainWithCheckpointsAsync(
@@ -205,7 +94,6 @@ public sealed class TorchModelTrainer : IModelTrainer
 
         // Create or load model
         Module<Tensor, Tensor> model;
-        Module<Tensor, Tensor>? bestModelState = null;
         var startEpoch = 1;
         var bestValidationLoss = double.MaxValue;
         var epochsSinceImprovement = 0;
@@ -218,14 +106,6 @@ public sealed class TorchModelTrainer : IModelTrainer
             model = CreateModel(config.ModelType, featureCount, config);
             var modelPath = checkpointManager.GetModelWeightsPath(jobId, resumeFromCheckpoint.ModelWeightsPath);
             model.load(modelPath);
-
-            // Load best model if available
-            var bestModelPath = checkpointManager.GetModelWeightsPath(jobId, resumeFromCheckpoint.BestModelWeightsPath);
-            if (File.Exists(bestModelPath))
-            {
-                bestModelState = CreateModel(config.ModelType, featureCount, config);
-                bestModelState.load(bestModelPath);
-            }
 
             // Restore state
             startEpoch = resumeFromCheckpoint.Epoch + 1;
@@ -258,55 +138,72 @@ public sealed class TorchModelTrainer : IModelTrainer
         double finalTrainingLoss = 0;
         double finalValidationLoss = bestValidationLoss;
 
-        // Progress reporting frequency (every 5% or at least every 10 epochs)
-        var progressInterval = Math.Max(1, Math.Min(10, config.MaxEpochs / 20));
+        // Progress reporting frequency (every 500 epochs like Python, or at key points)
+        var progressInterval = Math.Max(100, config.MaxEpochs / 10);
+        
+        // Validation frequency - only validate periodically to reduce overhead
+        // But for checkpoints, we need to validate at checkpoint intervals
+        var validationInterval = checkpointIntervalEpochs > 0 
+            ? Math.Min(checkpointIntervalEpochs, Math.Max(1, config.EarlyStoppingPatience / 10))
+            : Math.Max(1, config.EarlyStoppingPatience / 10);
+
+        model.train();
 
         for (int epoch = startEpoch; epoch <= config.MaxEpochs; epoch++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             epochsTrained = epoch;
 
-            // Check for pause - wait until unpaused
-            while (isPaused?.Invoke() == true && !cancellationToken.IsCancellationRequested)
+            // Check for pause - wait until unpaused (only check periodically)
+            if (epoch % 100 == 0)
             {
-                await Task.Delay(100, cancellationToken);
+                while (isPaused?.Invoke() == true && !cancellationToken.IsCancellationRequested)
+                {
+                    await Task.Delay(100, cancellationToken);
+                }
             }
-            cancellationToken.ThrowIfCancellationRequested();
 
-            // Full-batch training (single forward/backward per epoch - much faster for small models)
-            model.train();
+            // Fast training loop - minimal overhead like Python
             optimizer.zero_grad();
+            using var trainPredictions = model.forward(trainFeatures);
+            using var trainLoss = lossFunction.forward(trainPredictions, trainTargets);
+            trainLoss.backward();
+            optimizer.step();
+            finalTrainingLoss = trainLoss.item<float>();
 
-            using (var trainPredictions = model.forward(trainFeatures))
-            using (var trainLoss = lossFunction.forward(trainPredictions, trainTargets))
+            // Only validate periodically to reduce overhead
+            bool shouldValidate = epoch % validationInterval == 0 || epoch == config.MaxEpochs;
+            bool shouldCheckpoint = checkpointIntervalEpochs > 0 && epoch % checkpointIntervalEpochs == 0;
+            
+            if (shouldValidate || shouldCheckpoint)
             {
-                trainLoss.backward();
-                optimizer.step();
-                finalTrainingLoss = trainLoss.item<float>();
+                model.eval();
+                using (torch.no_grad())
+                {
+                    using var valPredictions = model.forward(valFeatures);
+                    using var valLoss = lossFunction.forward(valPredictions, valTargets);
+                    finalValidationLoss = valLoss.item<float>();
+                }
+                model.train();
+
+                if (finalValidationLoss < bestValidationLoss)
+                {
+                    bestValidationLoss = finalValidationLoss;
+                    epochsSinceImprovement = 0;
+                }
+                else
+                {
+                    epochsSinceImprovement += validationInterval;
+                }
+
+                // Early stopping check
+                if (epochsSinceImprovement >= config.EarlyStoppingPatience)
+                {
+                    earlyStopTriggered = true;
+                    break;
+                }
             }
 
-            // Validation step
-            model.eval();
-            using (torch.no_grad())
-            {
-                using var valPredictions = model.forward(valFeatures);
-                using var valLoss = lossFunction.forward(valPredictions, valTargets);
-                finalValidationLoss = valLoss.item<float>();
-            }
-
-            if (finalValidationLoss < bestValidationLoss)
-            {
-                bestValidationLoss = finalValidationLoss;
-                bestModelState?.Dispose();
-                bestModelState = CloneModel(model, config.ModelType, featureCount, config);
-                epochsSinceImprovement = 0;
-            }
-            else
-            {
-                epochsSinceImprovement++;
-            }
-
-            // Report progress less frequently to reduce overhead
+            // Report progress less frequently
             if (epoch % progressInterval == 0 || epoch == startEpoch || epoch == config.MaxEpochs)
             {
                 progress?.Report(new TrainingProgress
@@ -322,7 +219,7 @@ public sealed class TorchModelTrainer : IModelTrainer
             }
 
             // Save checkpoint periodically (if enabled)
-            if (checkpointIntervalEpochs > 0 && epoch % checkpointIntervalEpochs == 0)
+            if (shouldCheckpoint)
             {
                 var checkpoint = new TrainingCheckpoint
                 {
@@ -344,36 +241,24 @@ public sealed class TorchModelTrainer : IModelTrainer
                     BestModelWeightsPath = "model_best.pt"
                 };
 
-                await checkpointManager.SaveCheckpointAsync(checkpoint, model, bestModelState, cancellationToken);
+                await checkpointManager.SaveCheckpointAsync(checkpoint, model, null, cancellationToken);
                 onCheckpointSaved?.Invoke(epoch, bestValidationLoss);
             }
 
-            // Early stopping
-            if (epochsSinceImprovement >= config.EarlyStoppingPatience)
+            // Check cancellation and yield less frequently
+            if (epoch % 500 == 0)
             {
-                earlyStopTriggered = true;
-                break;
-            }
-
-            // Yield periodically to allow cancellation
-            if (epoch % 100 == 0)
-            {
+                cancellationToken.ThrowIfCancellationRequested();
                 await Task.Yield();
             }
         }
 
         sw.Stop();
 
-        // Use best model if available
-        var finalModel = bestModelState ?? model;
-        if (bestModelState is not null && bestModelState != model)
-        {
-            model.Dispose();
-        }
-
+        // No model cloning - use final trained model (like Python implementation)
         var trainedModel = new TorchTrainedModel(
             Guid.NewGuid(),
-            finalModel,
+            model,
             config.ModelType,
             trainData.FeatureNames);
 
