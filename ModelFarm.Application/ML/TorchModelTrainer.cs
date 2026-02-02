@@ -57,14 +57,14 @@ public sealed class TorchModelTrainer : IModelTrainer
         var sw = Stopwatch.StartNew();
         var featureCount = trainData.FeatureNames.Length;
         var epochsTrained = 0;
-        
-        // Convert data to tensors
+
+        // Load ALL data to GPU once at the start
         var (trainFeatures, trainTargets) = CreateTensors(trainData);
         var (valFeatures, valTargets) = CreateTensors(validationData);
 
-        // Create model based on type
+        // Create model
         var model = CreateModel(config.ModelType, featureCount, config);
-        
+
         // Create optimizer
         var optimizer = torch.optim.Adam(model.parameters(), lr: config.LearningRate);
         var lossFunction = nn.MSELoss();
@@ -76,15 +76,18 @@ public sealed class TorchModelTrainer : IModelTrainer
         double finalTrainingLoss = 0;
         double finalValidationLoss = 0;
 
+        // Progress reporting frequency (every 5% or at least every 10 epochs)
+        var progressInterval = Math.Max(1, Math.Min(10, config.MaxEpochs / 20));
+
         for (int epoch = 1; epoch <= config.MaxEpochs; epoch++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             epochsTrained = epoch;
 
-            // Training step - use 'using' to dispose intermediate tensors immediately
+            // Full-batch training (single forward/backward per epoch - much faster for small models)
             model.train();
             optimizer.zero_grad();
-            
+
             using (var trainPredictions = model.forward(trainFeatures))
             using (var trainLoss = lossFunction.forward(trainPredictions, trainTargets))
             {
@@ -105,6 +108,7 @@ public sealed class TorchModelTrainer : IModelTrainer
             if (finalValidationLoss < bestValidationLoss)
             {
                 bestValidationLoss = finalValidationLoss;
+                bestModelState?.Dispose();
                 bestModelState = CloneModel(model, config.ModelType, featureCount, config);
                 epochsSinceImprovement = 0;
             }
@@ -113,16 +117,20 @@ public sealed class TorchModelTrainer : IModelTrainer
                 epochsSinceImprovement++;
             }
 
-            progress?.Report(new TrainingProgress
+            // Report progress less frequently to reduce overhead
+            if (epoch % progressInterval == 0 || epoch == 1 || epoch == config.MaxEpochs)
             {
-                CurrentEpoch = epoch,
-                TotalEpochs = config.MaxEpochs,
-                TrainingLoss = finalTrainingLoss,
-                ValidationLoss = finalValidationLoss,
-                BestValidationLoss = bestValidationLoss,
-                EpochsSinceImprovement = epochsSinceImprovement,
-                Message = $"Epoch {epoch}/{config.MaxEpochs} - Train Loss: {finalTrainingLoss:F6}, Val Loss: {finalValidationLoss:F6}"
-            });
+                progress?.Report(new TrainingProgress
+                {
+                    CurrentEpoch = epoch,
+                    TotalEpochs = config.MaxEpochs,
+                    TrainingLoss = finalTrainingLoss,
+                    ValidationLoss = finalValidationLoss,
+                    BestValidationLoss = bestValidationLoss,
+                    EpochsSinceImprovement = epochsSinceImprovement,
+                    Message = $"Epoch {epoch}/{config.MaxEpochs} - Train: {finalTrainingLoss:F6}, Val: {finalValidationLoss:F6}"
+                });
+            }
 
             // Early stopping
             if (epochsSinceImprovement >= config.EarlyStoppingPatience)
@@ -131,13 +139,16 @@ public sealed class TorchModelTrainer : IModelTrainer
                 break;
             }
 
-            // Small delay to allow cancellation checks
-            await Task.Delay(1, cancellationToken);
+            // Yield periodically to allow cancellation
+            if (epoch % 100 == 0)
+            {
+                await Task.Yield();
+            }
         }
 
         sw.Stop();
 
-        // Use best model if available, dispose the unused one
+        // Use best model if available
         var finalModel = bestModelState ?? model;
         if (bestModelState is not null && bestModelState != model)
         {
@@ -166,7 +177,7 @@ public sealed class TorchModelTrainer : IModelTrainer
             BestValidationLoss = bestValidationLoss,
             EarlyStopTriggered = earlyStopTriggered,
             TrainingDuration = sw.Elapsed,
-            EpochHistory = [] // Not stored - would require database/file storage for real use
+            EpochHistory = []
         };
     }
 
@@ -188,7 +199,7 @@ public sealed class TorchModelTrainer : IModelTrainer
         var featureCount = trainData.FeatureNames.Length;
         var epochsTrained = 0;
 
-        // Convert data to tensors
+        // Load ALL data to GPU once at the start
         var (trainFeatures, trainTargets) = CreateTensors(trainData);
         var (valFeatures, valTargets) = CreateTensors(validationData);
 
@@ -247,6 +258,9 @@ public sealed class TorchModelTrainer : IModelTrainer
         double finalTrainingLoss = 0;
         double finalValidationLoss = bestValidationLoss;
 
+        // Progress reporting frequency (every 5% or at least every 10 epochs)
+        var progressInterval = Math.Max(1, Math.Min(10, config.MaxEpochs / 20));
+
         for (int epoch = startEpoch; epoch <= config.MaxEpochs; epoch++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -259,7 +273,7 @@ public sealed class TorchModelTrainer : IModelTrainer
             }
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Training step - use 'using' to dispose intermediate tensors immediately
+            // Full-batch training (single forward/backward per epoch - much faster for small models)
             model.train();
             optimizer.zero_grad();
 
@@ -283,6 +297,7 @@ public sealed class TorchModelTrainer : IModelTrainer
             if (finalValidationLoss < bestValidationLoss)
             {
                 bestValidationLoss = finalValidationLoss;
+                bestModelState?.Dispose();
                 bestModelState = CloneModel(model, config.ModelType, featureCount, config);
                 epochsSinceImprovement = 0;
             }
@@ -291,16 +306,20 @@ public sealed class TorchModelTrainer : IModelTrainer
                 epochsSinceImprovement++;
             }
 
-            progress?.Report(new TrainingProgress
+            // Report progress less frequently to reduce overhead
+            if (epoch % progressInterval == 0 || epoch == startEpoch || epoch == config.MaxEpochs)
             {
-                CurrentEpoch = epoch,
-                TotalEpochs = config.MaxEpochs,
-                TrainingLoss = finalTrainingLoss,
-                ValidationLoss = finalValidationLoss,
-                BestValidationLoss = bestValidationLoss,
-                EpochsSinceImprovement = epochsSinceImprovement,
-                Message = $"Epoch {epoch}/{config.MaxEpochs} - Train Loss: {finalTrainingLoss:F6}, Val Loss: {finalValidationLoss:F6}"
-            });
+                progress?.Report(new TrainingProgress
+                {
+                    CurrentEpoch = epoch,
+                    TotalEpochs = config.MaxEpochs,
+                    TrainingLoss = finalTrainingLoss,
+                    ValidationLoss = finalValidationLoss,
+                    BestValidationLoss = bestValidationLoss,
+                    EpochsSinceImprovement = epochsSinceImprovement,
+                    Message = $"Epoch {epoch}/{config.MaxEpochs} - Train: {finalTrainingLoss:F6}, Val: {finalValidationLoss:F6}"
+                });
+            }
 
             // Save checkpoint periodically (if enabled)
             if (checkpointIntervalEpochs > 0 && epoch % checkpointIntervalEpochs == 0)
@@ -336,13 +355,16 @@ public sealed class TorchModelTrainer : IModelTrainer
                 break;
             }
 
-            // Small delay to allow cancellation checks
-            await Task.Delay(1, cancellationToken);
+            // Yield periodically to allow cancellation
+            if (epoch % 100 == 0)
+            {
+                await Task.Yield();
+            }
         }
 
         sw.Stop();
 
-        // Use best model if available, dispose the unused one
+        // Use best model if available
         var finalModel = bestModelState ?? model;
         if (bestModelState is not null && bestModelState != model)
         {
@@ -371,7 +393,7 @@ public sealed class TorchModelTrainer : IModelTrainer
             BestValidationLoss = bestValidationLoss,
             EarlyStopTriggered = earlyStopTriggered,
             TrainingDuration = accumulatedDuration + sw.Elapsed,
-            EpochHistory = [] // Not stored - would require database/file storage for real use
+            EpochHistory = []
         };
     }
 
