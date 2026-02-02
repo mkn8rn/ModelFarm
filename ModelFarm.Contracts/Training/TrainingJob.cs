@@ -14,6 +14,12 @@ public sealed record TrainingJobRequest
     /// Optional name override for this job.
     /// </summary>
     public string? JobName { get; init; }
+
+    /// <summary>
+    /// Resource queue ID to run this job in.
+    /// If null, uses the default queue.
+    /// </summary>
+    public Guid? QueueId { get; init; }
 }
 
 /// <summary>
@@ -25,6 +31,11 @@ public sealed record TrainingJob
     public required string Name { get; init; }
     public required Guid ConfigurationId { get; init; }
     public required TrainingJobStatus Status { get; init; }
+
+    /// <summary>
+    /// Resource queue this job is running in.
+    /// </summary>
+    public Guid? QueueId { get; init; }
 
     /// <summary>
     /// Current epoch (if training is in progress).

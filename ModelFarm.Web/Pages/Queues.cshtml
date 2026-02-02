@@ -1,0 +1,235 @@
+@page
+@model ModelFarm.Web.Pages.QueuesModel
+@{
+    ViewData["Title"] = "Resource Queues";
+}
+
+<h4 class="mb-3"><i class="bi bi-collection me-2"></i>Resource Queues</h4>
+
+<p class="text-muted small mb-3">
+    Queues pair CPU, GPU, and optionally RAM containers. Jobs are submitted to queues for resource allocation.
+</p>
+
+<div class="row">
+    <div class="col-md-5">
+        <div class="card">
+            <div class="card-header">New Queue</div>
+            <div class="card-body">
+                <form id="createForm">
+                    <div class="mb-3">
+                        <label class="form-label">Name</label>
+                        <input type="text" class="form-control" id="queueName" required placeholder="e.g., High Priority, Background">
+                    </div>
+                    <div class="row">
+                        <div class="col-4 mb-3">
+                            <label class="form-label"><i class="bi bi-cpu"></i> CPU</label>
+                            <select class="form-select form-select-sm" id="cpuContainerSelect" required></select>
+                        </div>
+                        <div class="col-4 mb-3">
+                            <label class="form-label"><i class="bi bi-gpu-card"></i> GPU</label>
+                            <select class="form-select form-select-sm" id="gpuContainerSelect" required></select>
+                        </div>
+                        <div class="col-4 mb-3">
+                            <label class="form-label"><i class="bi bi-memory"></i> RAM</label>
+                            <select class="form-select form-select-sm" id="ramContainerSelect">
+                                <option value="">(No limit)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Max Concurrent Jobs</label>
+                        <input type="number" class="form-control" id="maxConcurrentJobs" value="1" min="1">
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-3">
+                            <label class="form-label">Max Job Duration (minutes)</label>
+                            <input type="number" class="form-control" id="maxJobDurationMinutes" placeholder="No limit" min="1">
+                            <small class="text-muted">Leave empty for no limit</small>
+                        </div>
+                        <div class="col-6 mb-3">
+                            <label class="form-label">Max Queue Wait (minutes)</label>
+                            <input type="number" class="form-control" id="maxQueueWaitMinutes" placeholder="No limit" min="1">
+                            <small class="text-muted">Leave empty for no limit</small>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Description (optional)</label>
+                        <input type="text" class="form-control" id="queueDescription">
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="queueIsDefault">
+                        <label class="form-check-label" for="queueIsDefault">Set as default queue</label>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">Create Queue</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Queues</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadQueues()"><i class="bi bi-arrow-clockwise"></i></button>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Containers</th>
+                            <th>Limits</th>
+                            <th>Running</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="queuesBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    const csrfToken = '@Html.AntiForgeryToken()'.match(/value="([^"]+)"/)?.[1] || '';
+    let cpuContainers = [];
+    let gpuContainers = [];
+    let ramContainers = [];
+
+    async function postWithToken(url, body) {
+        if (body instanceof FormData) {
+            body.append('__RequestVerificationToken', csrfToken);
+        }
+        return fetch(url, { method: 'POST', body });
+    }
+
+    function formatBytes(bytes) {
+        if (!bytes) return '-';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function formatDuration(minutes) {
+        if (!minutes) return '-';
+        if (minutes < 60) return `${minutes}m`;
+        const h = Math.floor(minutes / 60);
+        const m = minutes % 60;
+        return m > 0 ? `${h}h ${m}m` : `${h}h`;
+    }
+
+    document.getElementById('createForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = new FormData();
+        form.append('Name', document.getElementById('queueName').value);
+        form.append('CpuContainerId', document.getElementById('cpuContainerSelect').value);
+        form.append('GpuContainerId', document.getElementById('gpuContainerSelect').value);
+        
+        const ramContainerId = document.getElementById('ramContainerSelect').value;
+        if (ramContainerId) form.append('RamContainerId', ramContainerId);
+        
+        form.append('MaxConcurrentJobs', document.getElementById('maxConcurrentJobs').value);
+        
+        const maxJobDuration = document.getElementById('maxJobDurationMinutes').value;
+        if (maxJobDuration) form.append('MaxJobDurationMinutes', maxJobDuration);
+        
+        const maxQueueWait = document.getElementById('maxQueueWaitMinutes').value;
+        if (maxQueueWait) form.append('MaxQueueWaitMinutes', maxQueueWait);
+        
+        form.append('Description', document.getElementById('queueDescription').value);
+        form.append('IsDefault', document.getElementById('queueIsDefault').checked);
+
+        const res = await postWithToken('?handler=Create', form);
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById('queueName').value = '';
+            document.getElementById('queueDescription').value = '';
+            document.getElementById('maxJobDurationMinutes').value = '';
+            document.getElementById('maxQueueWaitMinutes').value = '';
+            document.getElementById('queueIsDefault').checked = false;
+            loadQueues();
+        } else {
+            alert(data.error);
+        }
+    });
+
+    async function loadContainers() {
+        const res = await fetch('?handler=Containers');
+        const data = await res.json();
+        
+        cpuContainers = data.cpu;
+        gpuContainers = data.gpu;
+        ramContainers = data.ram;
+        
+        document.getElementById('cpuContainerSelect').innerHTML = cpuContainers.map(c => 
+            `<option value="${c.containerId}">${c.name} (${c.maxCapacity} threads)</option>`
+        ).join('');
+        
+        document.getElementById('gpuContainerSelect').innerHTML = gpuContainers.map(c => 
+            `<option value="${c.containerId}">${c.name} (${c.maxCapacity} devices)</option>`
+        ).join('');
+        
+        document.getElementById('ramContainerSelect').innerHTML = 
+            '<option value="">(No limit)</option>' +
+            ramContainers.map(c => 
+                `<option value="${c.containerId}">${c.name} (${formatBytes(c.maxCapacity)})</option>`
+            ).join('');
+    }
+
+    async function loadQueues() {
+        const res = await fetch('?handler=Queues');
+        const queues = await res.json();
+        
+        const tbody = document.getElementById('queuesBody');
+        if (queues.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center">No queues configured</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = queues.map(q => {
+            const usagePercent = q.maxConcurrentJobs > 0 ? (q.runningJobs / q.maxConcurrentJobs * 100) : 0;
+            const barClass = usagePercent >= 100 ? 'bg-danger' : usagePercent >= 50 ? 'bg-warning' : 'bg-success';
+            
+            // Format containers
+            const containers = `<small><i class="bi bi-cpu"></i> ${q.cpuContainerName}<br><i class="bi bi-gpu-card"></i> ${q.gpuContainerName}${q.ramContainerName ? `<br><i class="bi bi-memory"></i> ${q.ramContainerName}` : ''}</small>`;
+            
+            // Format limits
+            const jobDuration = q.maxJobDuration ? formatDuration(Math.round(q.maxJobDuration.totalMinutes || (q.maxJobDuration / 60000))) : '?';
+            const queueWait = q.maxQueueWaitTime ? formatDuration(Math.round(q.maxQueueWaitTime.totalMinutes || (q.maxQueueWaitTime / 60000))) : '?';
+            const limits = `<small>${q.maxConcurrentJobs} jobs<br>Job: ${jobDuration}<br>Wait: ${queueWait}</small>`;
+            
+            return `
+                <tr>
+                    <td>${q.name}${q.isDefault ? '<span class="badge bg-primary ms-1">Default</span>' : ''}</td>
+                    <td>${containers}</td>
+                    <td>${limits}</td>
+                    <td>
+                        <div class="progress" style="height: 18px; min-width: 50px;">
+                            <div class="progress-bar ${barClass}" style="width: ${usagePercent}%">${q.runningJobs}</div>
+                        </div>
+                    </td>
+                    <td>${q.isDefault ? '' : `<button class="btn btn-sm btn-outline-danger" onclick="deleteQueue('${q.queueId}')"><i class="bi bi-trash"></i></button>`}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    async function deleteQueue(queueId) {
+        const form = new FormData();
+        form.append('QueueId', queueId);
+        const res = await postWithToken('?handler=Delete', form);
+        const data = await res.json();
+        if (data.success) {
+            loadQueues();
+        } else {
+            alert(data.error);
+        }
+    }
+
+    loadContainers();
+    loadQueues();
+    setInterval(loadQueues, 3000);
+</script>
+}

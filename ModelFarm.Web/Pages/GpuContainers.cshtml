@@ -1,0 +1,138 @@
+@page
+@model ModelFarm.Web.Pages.GpuContainersModel
+@{
+    ViewData["Title"] = "GPU Containers";
+}
+
+<h4 class="mb-3"><i class="bi bi-gpu-card me-2"></i>GPU Containers</h4>
+
+<p class="text-muted small mb-3">
+    GPU containers define device pools for training and inference operations.
+    @if (Model.CudaAvailable)
+    {
+        <span class="badge bg-success">CUDA Available - @Model.GpuCount device(s)</span>
+    }
+    else
+    {
+        <span class="badge bg-warning">CPU Only Mode</span>
+    }
+</p>
+
+<div class="row">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">New GPU Container</div>
+            <div class="card-body">
+                <form id="createForm">
+                    <div class="mb-3">
+                        <label class="form-label">Name</label>
+                        <input type="text" class="form-control" id="containerName" required placeholder="e.g., Primary GPU, Training GPU">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Max Devices</label>
+                        <input type="number" class="form-control" id="containerCapacity" value="1" min="0" max="@Model.GpuCount">
+                        <small class="text-muted">System has @Model.GpuCount GPU device(s)</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Description (optional)</label>
+                        <input type="text" class="form-control" id="containerDescription">
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="containerIsDefault">
+                        <label class="form-check-label" for="containerIsDefault">Set as default GPU container</label>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">Create Container</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>GPU Containers</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadContainers()"><i class="bi bi-arrow-clockwise"></i></button>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Max Devices</th>
+                            <th>Description</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="containersBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    const csrfToken = '@Html.AntiForgeryToken()'.match(/value="([^"]+)"/)?.[1] || '';
+
+    async function postWithToken(url, body) {
+        if (body instanceof FormData) {
+            body.append('__RequestVerificationToken', csrfToken);
+        }
+        return fetch(url, { method: 'POST', body });
+    }
+
+    document.getElementById('createForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = new FormData();
+        form.append('Name', document.getElementById('containerName').value);
+        form.append('MaxCapacity', document.getElementById('containerCapacity').value);
+        form.append('Description', document.getElementById('containerDescription').value);
+        form.append('IsDefault', document.getElementById('containerIsDefault').checked);
+
+        const res = await postWithToken('?handler=Create', form);
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById('containerName').value = '';
+            document.getElementById('containerDescription').value = '';
+            document.getElementById('containerIsDefault').checked = false;
+            loadContainers();
+        } else {
+            alert(data.error);
+        }
+    });
+
+    async function loadContainers() {
+        const res = await fetch('?handler=Containers');
+        const containers = await res.json();
+        
+        const tbody = document.getElementById('containersBody');
+        if (containers.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No GPU containers</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = containers.map(c => `
+            <tr>
+                <td>${c.name}${c.isDefault ? '<span class="badge bg-primary ms-1">Default</span>' : ''}</td>
+                <td>${c.maxCapacity} device(s)</td>
+                <td><small class="text-muted">${c.description || '-'}</small></td>
+                <td>${c.isDefault ? '' : `<button class="btn btn-sm btn-outline-danger" onclick="deleteContainer('${c.containerId}')"><i class="bi bi-trash"></i></button>`}</td>
+            </tr>
+        `).join('');
+    }
+
+    async function deleteContainer(containerId) {
+        const form = new FormData();
+        form.append('ContainerId', containerId);
+        const res = await postWithToken('?handler=Delete', form);
+        const data = await res.json();
+        if (data.success) {
+            loadContainers();
+        } else {
+            alert(data.error);
+        }
+    }
+
+    loadContainers();
+</script>
+}

@@ -8,10 +8,14 @@ namespace ModelFarm.Web.Pages;
 public class JobsModel : PageModel
 {
     private readonly ITrainingService _trainingService;
+    private readonly IResourceQueueService _queueService;
 
-    public JobsModel(ITrainingService trainingService)
+    public JobsModel(
+        ITrainingService trainingService,
+        IResourceQueueService queueService)
     {
         _trainingService = trainingService;
+        _queueService = queueService;
     }
 
     // ==================== Training Job Form ====================
@@ -19,32 +23,25 @@ public class JobsModel : PageModel
     public Guid ConfigurationId { get; set; }
 
     [BindProperty]
-    public string? JobName { get; set; }
+    public Guid? QueueId { get; set; }
 
     [BindProperty]
-    public int MaxConcurrentJobs { get; set; }
+    public string? JobName { get; set; }
 
     public void OnGet() { }
 
-    // ==================== Concurrency Settings ====================
-    public IActionResult OnGetConcurrencySettings()
+    // ==================== Resource Status ====================
+    public IActionResult OnGetResourceStatus()
     {
-        return new JsonResult(new
-        {
-            maxConcurrent = _trainingService.GetMaxConcurrentJobs(),
-            runningCount = _trainingService.GetRunningJobCount()
-        });
+        var queues = _queueService.GetAllQueueStatus();
+        return new JsonResult(new { queues });
     }
 
-    public IActionResult OnPostSetConcurrency()
+    // ==================== Queue Endpoints ====================
+    public IActionResult OnGetQueues()
     {
-        _trainingService.SetMaxConcurrentJobs(MaxConcurrentJobs);
-        return new JsonResult(new
-        {
-            success = true,
-            maxConcurrent = _trainingService.GetMaxConcurrentJobs(),
-            runningCount = _trainingService.GetRunningJobCount()
-        });
+        var queues = _queueService.GetAllQueueStatus();
+        return new JsonResult(queues);
     }
 
     // ==================== Configuration Endpoints ====================
@@ -62,7 +59,8 @@ public class JobsModel : PageModel
             var request = new TrainingJobRequest
             {
                 ConfigurationId = ConfigurationId,
-                JobName = string.IsNullOrWhiteSpace(JobName) ? null : JobName
+                JobName = string.IsNullOrWhiteSpace(JobName) ? null : JobName,
+                QueueId = QueueId
             };
 
             var job = await _trainingService.StartTrainingAsync(request);
@@ -115,5 +113,18 @@ public class JobsModel : PageModel
     {
         var resumed = await _trainingService.ResumeTrainingJobAsync(jobId);
         return new JsonResult(new { success = resumed });
+    }
+
+    public async Task<IActionResult> OnPostDeleteJobAsync(Guid jobId)
+    {
+        try
+        {
+            var deleted = await _trainingService.DeleteTrainingJobAsync(jobId);
+            return new JsonResult(new { success = deleted });
+        }
+        catch (Exception ex)
+        {
+            return new JsonResult(new { success = false, error = ex.Message });
+        }
     }
 }

@@ -16,6 +16,8 @@ public sealed class ApplicationDbContext : DbContext
     public DbSet<ModelTestEntity> ModelTests => Set<ModelTestEntity>();
     public DbSet<UserAccessEntity> UserAccess => Set<UserAccessEntity>();
     public DbSet<UserOwnershipEntity> UserOwnerships => Set<UserOwnershipEntity>();
+    public DbSet<ResourceContainerEntity> ResourceContainers => Set<ResourceContainerEntity>();
+    public DbSet<ResourceQueueEntity> ResourceQueues => Set<ResourceQueueEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -96,9 +98,29 @@ public sealed class ApplicationDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.ResourceType).HasMaxLength(50);
 
+
             entity.HasIndex(e => e.UserId);
             entity.HasIndex(e => new { e.ResourceType, e.ResourceId });
             entity.HasIndex(e => new { e.UserId, e.ResourceType });
+        });
+
+        modelBuilder.Entity<ResourceContainerEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).HasMaxLength(100);
+            entity.Property(e => e.Description).HasMaxLength(500);
+
+            entity.HasIndex(e => e.Type);
+            entity.HasIndex(e => new { e.Type, e.IsDefault });
+        });
+
+        modelBuilder.Entity<ResourceQueueEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).HasMaxLength(100);
+            entity.Property(e => e.Description).HasMaxLength(500);
+
+            entity.HasIndex(e => e.IsDefault);
         });
     }
 }

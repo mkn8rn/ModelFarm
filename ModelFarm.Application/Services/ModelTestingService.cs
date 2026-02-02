@@ -260,47 +260,71 @@ public sealed class ModelTestingService : IModelTestingService
         // Normalize using model's normalization stats
         var normalizedData = FeatureEngineering.ApplyNormalization(testData, model.NormalizationStats);
 
-        // Run predictions
-        var predictions = new List<TestPrediction>();
-        var predictionResults = new List<PredictionResult>();
+        var sampleCount = normalizedData.Samples.Count;
+        
+        // Batch predict all samples at once (much faster than one-by-one)
+        var featuresList = new List<float[]>(sampleCount);
+        foreach (var sample in normalizedData.Samples)
+        {
+            featuresList.Add(sample.Features);
+        }
+        var predictedValues = model.Model.PredictBatch(featuresList);
+
+        // Build results using global parallelism coordinator
+        var predictions = new TestPrediction[sampleCount];
+        var predictionResults = new PredictionResult[sampleCount];
         double sumSquaredError = 0;
         double sumAbsoluteError = 0;
         int correctDirection = 0;
+        object lockObj = new();
 
-        foreach (var sample in normalizedData.Samples)
-        {
-            var predicted = model.Model.Predict(sample.Features);
-            var actual = sample.Target;
-
-            var error = predicted - actual;
-            sumSquaredError += error * error;
-            sumAbsoluteError += Math.Abs(error);
-
-            // Directional accuracy: did we predict the correct sign?
-            if ((predicted > 0 && actual > 0) || (predicted < 0 && actual < 0) || (predicted == 0 && actual == 0))
-                correctDirection++;
-
-            var signal = predicted > 0 ? "BUY" : predicted < 0 ? "SELL" : "HOLD";
-
-            predictions.Add(new TestPrediction
+        ParallelismCoordinator.For(0, sampleCount, 
+            () => (sse: 0.0, sae: 0.0, correct: 0),
+            (i, state, local) =>
             {
-                Timestamp = sample.Timestamp,
-                ClosePrice = (decimal)sample.ClosePrice,
-                ActualReturn = actual,
-                PredictedReturn = predicted,
-                Signal = signal
+                var sample = normalizedData.Samples[i];
+                var predicted = predictedValues[i];
+                var actual = sample.Target;
+
+                var error = predicted - actual;
+                local.sse += error * error;
+                local.sae += Math.Abs(error);
+
+                if ((predicted > 0 && actual > 0) || (predicted < 0 && actual < 0) || (predicted == 0 && actual == 0))
+                    local.correct++;
+
+                var signal = predicted > 0 ? "BUY" : predicted < 0 ? "SELL" : "HOLD";
+
+                predictions[i] = new TestPrediction
+                {
+                    Timestamp = sample.Timestamp,
+                    ClosePrice = (decimal)sample.ClosePrice,
+                    ActualReturn = actual,
+                    PredictedReturn = predicted,
+                    Signal = signal
+                };
+
+                predictionResults[i] = new PredictionResult
+                {
+                    Timestamp = sample.Timestamp,
+                    Actual = actual,
+                    Predicted = predicted,
+                    ClosePrice = sample.ClosePrice
+                };
+
+                return local;
+            },
+            local =>
+            {
+                lock (lockObj)
+                {
+                    sumSquaredError += local.sse;
+                    sumAbsoluteError += local.sae;
+                    correctDirection += local.correct;
+                }
             });
 
-            predictionResults.Add(new PredictionResult
-            {
-                Timestamp = sample.Timestamp,
-                Actual = actual,
-                Predicted = predicted,
-                ClosePrice = sample.ClosePrice
-            });
-        }
-
-        var totalPredictions = predictions.Count;
+        var totalPredictions = sampleCount;
         var mse = totalPredictions > 0 ? sumSquaredError / totalPredictions : 0;
         var mae = totalPredictions > 0 ? sumAbsoluteError / totalPredictions : 0;
         var directionalAccuracy = totalPredictions > 0 ? (double)correctDirection / totalPredictions : 0;
@@ -310,12 +334,13 @@ public sealed class ModelTestingService : IModelTestingService
         var dataset = await _datasetService.GetDatasetAsync(datasetId, cancellationToken);
         var annualizationFactor = CalculateAnnualizationFactor(dataset?.Interval ?? Contracts.MarketData.KlineInterval.OneHour);
 
-        var backtestResult = _backtestEngine.RunBacktest(predictionResults, model.TradingConfig, annualizationFactor);
+        var backtestResult = _backtestEngine.RunBacktest(predictionResults.ToList(), model.TradingConfig, annualizationFactor);
 
         // Limit predictions returned to avoid large payloads
-        var limitedPredictions = predictions.Count > 500
-            ? predictions.Take(250).Concat(predictions.Skip(predictions.Count - 250)).ToList()
-            : predictions;
+        var predictionsList = predictions.ToList();
+        var limitedPredictions = predictionsList.Count > 500
+            ? predictionsList.Take(250).Concat(predictionsList.Skip(predictionsList.Count - 250)).ToList()
+            : predictionsList;
 
         return new ModelTestResult
         {
@@ -421,12 +446,14 @@ internal sealed class MLPModel : Module<Tensor, Tensor>
 
 /// <summary>
 /// Wrapper for a TorchSharp model that implements ITrainedModel.
+/// Supports configurable GPU inference for larger models.
 /// </summary>
 internal sealed class TorchTrainedModel : ITrainedModel
 {
     private readonly Module<Tensor, Tensor> _model;
     private readonly ModelType _modelType;
     private readonly string[] _featureNames;
+    private readonly Device _inferenceDevice;
 
     public Guid ModelId { get; }
 
@@ -434,20 +461,36 @@ internal sealed class TorchTrainedModel : ITrainedModel
         Module<Tensor, Tensor> model,
         Guid modelId,
         ModelType modelType,
-        string[] featureNames)
+        string[] featureNames,
+        bool useGpuForInference = false)
     {
         _model = model;
         ModelId = modelId;
         _modelType = modelType;
         _featureNames = featureNames;
+        
+        // Determine inference device based on configuration and availability
+        if (useGpuForInference && torch.cuda.is_available())
+        {
+            _inferenceDevice = torch.CUDA;
+            _model.to(_inferenceDevice);
+        }
+        else
+        {
+            _inferenceDevice = torch.CPU;
+            _model.cpu();
+        }
+        
+        _model.eval();
     }
 
     public float Predict(float[] features)
     {
         using var _ = torch.no_grad();
-        using var input = torch.tensor(features, dtype: ScalarType.Float32).reshape(1, features.Length);
+        using var inputCpu = torch.tensor(features, dtype: ScalarType.Float32).reshape(1, features.Length);
+        using var input = inputCpu.to(_inferenceDevice);
         using var output = _model.forward(input);
-        return output.item<float>();
+        return output.cpu().item<float>();
     }
 
     public float[] PredictBatch(IReadOnlyList<float[]> features)
@@ -459,10 +502,12 @@ internal sealed class TorchTrainedModel : ITrainedModel
         for (int i = 0; i < features.Count; i++)
             Array.Copy(features[i], 0, flatArray, i * featureCount, featureCount);
 
-        using var input = torch.tensor(flatArray, dtype: ScalarType.Float32).reshape(features.Count, featureCount);
+        using var inputCpu = torch.tensor(flatArray, dtype: ScalarType.Float32).reshape(features.Count, featureCount);
+        using var input = inputCpu.to(_inferenceDevice);
         using var output = _model.forward(input);
+        using var outputCpu = output.cpu();
 
-        return output.data<float>().ToArray();
+        return outputCpu.data<float>().ToArray();
     }
 
     public Task SaveAsync(string path, CancellationToken cancellationToken = default)

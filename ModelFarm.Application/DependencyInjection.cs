@@ -24,6 +24,10 @@ public static class DependencyInjection
         services.AddSingleton<IModelTrainer>(sp => new TorchModelTrainer(seed: 42));
         services.AddSingleton<BacktestEngine>();
 
+        // Register resource services (singleton for shared state)
+        services.AddSingleton<IResourceContainerService, ResourceContainerService>();  // Legacy, kept for backward compatibility
+        services.AddSingleton<IResourceQueueService, ResourceQueueService>();
+
         // Register application services (scoped)
         services.AddScoped<IUserContextService, UserContextService>();
         services.AddScoped<IIngestionService, IngestionService>();
@@ -34,6 +38,8 @@ public static class DependencyInjection
         services.AddScoped<IAuthService, AuthService>();
 
         // Background services
+        // Resource container initialization (must run first)
+        services.AddHostedService<ResourceContainerInitializationService>();
         // TaskProcessorService with reduced concurrency (2) to prevent OOM during training
         services.AddHostedService(sp => new TaskProcessorService(
             sp.GetRequiredService<IBackgroundTaskManager>(),

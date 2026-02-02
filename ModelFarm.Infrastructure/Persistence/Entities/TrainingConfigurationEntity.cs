@@ -43,6 +43,9 @@ public sealed class TrainingConfigurationEntity
     public bool ScaleLearningRateOnRetry { get; set; } = false;
     public double LearningRateRetryScale { get; set; } = 0.5;
 
+    // Inference Settings
+    public bool UseGpuForInference { get; set; } = false;
+
     // Performance Requirements (stored as JSON)
     public required string PerformanceRequirementsJson { get; set; }
 
@@ -81,6 +84,7 @@ public sealed class TrainingConfigurationEntity
         ShuffleOnRetry = ShuffleOnRetry,
         ScaleLearningRateOnRetry = ScaleLearningRateOnRetry,
         LearningRateRetryScale = LearningRateRetryScale,
+        UseGpuForInference = UseGpuForInference,
         PerformanceRequirements = JsonSerializer.Deserialize<PerformanceRequirements>(PerformanceRequirementsJson)!,
         TradingEnvironment = JsonSerializer.Deserialize<TradingEnvironmentConfig>(TradingEnvironmentJson)!,
         CreatedAtUtc = CreatedAtUtc,
@@ -114,6 +118,7 @@ public sealed class TrainingConfigurationEntity
         ShuffleOnRetry = config.ShuffleOnRetry,
         ScaleLearningRateOnRetry = config.ScaleLearningRateOnRetry,
         LearningRateRetryScale = config.LearningRateRetryScale,
+        UseGpuForInference = config.UseGpuForInference,
         PerformanceRequirementsJson = JsonSerializer.Serialize(config.PerformanceRequirements),
         TradingEnvironmentJson = JsonSerializer.Serialize(config.TradingEnvironment),
         CreatedAtUtc = config.CreatedAtUtc,
@@ -143,6 +148,7 @@ public sealed class TrainingConfigurationEntity
         ShuffleOnRetry = config.ShuffleOnRetry;
         ScaleLearningRateOnRetry = config.ScaleLearningRateOnRetry;
         LearningRateRetryScale = config.LearningRateRetryScale;
+        UseGpuForInference = config.UseGpuForInference;
         PerformanceRequirementsJson = JsonSerializer.Serialize(config.PerformanceRequirements);
         TradingEnvironmentJson = JsonSerializer.Serialize(config.TradingEnvironment);
         UpdatedAtUtc = config.UpdatedAtUtc;

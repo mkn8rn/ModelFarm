@@ -1,0 +1,141 @@
+@page
+@model ModelFarm.Web.Pages.RamContainersModel
+@{
+    ViewData["Title"] = "RAM Containers";
+}
+
+<h4 class="mb-3"><i class="bi bi-memory me-2"></i>RAM Containers</h4>
+
+<p class="text-muted small mb-3">
+    RAM containers define memory limits for training jobs. Assign them to queues to prevent memory exhaustion.
+    <span class="badge bg-info">System: @Model.FormatBytes(Model.TotalRam) total, @Model.FormatBytes(Model.AvailableRam) available</span>
+</p>
+
+<div class="row">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">New RAM Container</div>
+            <div class="card-body">
+                <form id="createForm">
+                    <div class="mb-3">
+                        <label class="form-label">Name</label>
+                        <input type="text" class="form-control" id="containerName" required placeholder="e.g., Training Memory, Low Memory">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Max Memory (GB)</label>
+                        <input type="number" class="form-control" id="containerCapacityGb" value="8" min="1" step="0.5">
+                        <small class="text-muted">Jobs in queues using this container will be limited to this memory</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Description (optional)</label>
+                        <input type="text" class="form-control" id="containerDescription">
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="containerIsDefault">
+                        <label class="form-check-label" for="containerIsDefault">Set as default RAM container</label>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">Create Container</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>RAM Containers</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadContainers()"><i class="bi bi-arrow-clockwise"></i></button>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Max Memory</th>
+                            <th>Description</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="containersBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    const csrfToken = '@Html.AntiForgeryToken()'.match(/value="([^"]+)"/)?.[1] || '';
+
+    async function postWithToken(url, body) {
+        if (body instanceof FormData) {
+            body.append('__RequestVerificationToken', csrfToken);
+        }
+        return fetch(url, { method: 'POST', body });
+    }
+
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    document.getElementById('createForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = new FormData();
+        form.append('Name', document.getElementById('containerName').value);
+        // Convert GB to bytes
+        const gb = parseFloat(document.getElementById('containerCapacityGb').value);
+        form.append('MaxCapacity', Math.floor(gb * 1024 * 1024 * 1024));
+        form.append('Description', document.getElementById('containerDescription').value);
+        form.append('IsDefault', document.getElementById('containerIsDefault').checked);
+
+        const res = await postWithToken('?handler=Create', form);
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById('containerName').value = '';
+            document.getElementById('containerDescription').value = '';
+            document.getElementById('containerIsDefault').checked = false;
+            loadContainers();
+        } else {
+            alert(data.error);
+        }
+    });
+
+    async function loadContainers() {
+        const res = await fetch('?handler=Containers');
+        const containers = await res.json();
+        
+        const tbody = document.getElementById('containersBody');
+        if (containers.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No RAM containers</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = containers.map(c => `
+            <tr>
+                <td>${c.name}${c.isDefault ? '<span class="badge bg-primary ms-1">Default</span>' : ''}</td>
+                <td>${formatBytes(c.maxCapacity)}</td>
+                <td><small class="text-muted">${c.description || '-'}</small></td>
+                <td>${c.isDefault ? '' : `<button class="btn btn-sm btn-outline-danger" onclick="deleteContainer('${c.containerId}')"><i class="bi bi-trash"></i></button>`}</td>
+            </tr>
+        `).join('');
+    }
+
+    async function deleteContainer(containerId) {
+        const form = new FormData();
+        form.append('ContainerId', containerId);
+        const res = await postWithToken('?handler=Delete', form);
+        const data = await res.json();
+        if (data.success) {
+            loadContainers();
+        } else {
+            alert(data.error);
+        }
+    }
+
+    loadContainers();
+</script>
+}

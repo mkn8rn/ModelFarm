@@ -8,6 +8,7 @@ namespace ModelFarm.Application.ML;
 /// Feature engineering for quant trading models.
 /// Creates lag features and calculates log returns similar to the Python notebook implementation.
 /// Memory-optimized: uses ArrayPool, stackalloc, and avoids LINQ allocations.
+/// Server-ready: uses ParallelismCoordinator for global thread pool management.
 /// </summary>
 public static class FeatureEngineering
 {
@@ -171,7 +172,7 @@ public static class FeatureEngineering
     /// <summary>
     /// Normalizes features using z-score normalization.
     /// Returns the statistics needed to normalize new data.
-    /// Memory-optimized: computes stats in a single pass using Welford's algorithm.
+    /// Server-ready: uses ParallelismCoordinator for global thread management.
     /// </summary>
     public static (TrainingData normalizedData, NormalizationStats stats) NormalizeFeatures(TrainingData data)
     {
@@ -182,45 +183,38 @@ public static class FeatureEngineering
         int sampleCount = data.Samples.Count;
         IReadOnlyList<TrainingSample> samples = data.Samples;
 
-        // Use stackalloc for small feature counts, otherwise allocate
-        double[]? meansArray = null;
-        double[]? m2Array = null;
-        double[]? stdsArray = null;
-        
-        Span<double> means = featureCount <= 32 
-            ? stackalloc double[featureCount] 
-            : (meansArray = new double[featureCount]);
-        Span<double> m2 = featureCount <= 32 
-            ? stackalloc double[featureCount] 
-            : (m2Array = new double[featureCount]);
-        Span<double> stds = featureCount <= 32 
-            ? stackalloc double[featureCount] 
-            : (stdsArray = new double[featureCount]);
+        // Calculate mean and variance
+        double[] means = new double[featureCount];
+        double[] stds = new double[featureCount];
 
-        // Single pass to calculate mean and variance using Welford's algorithm
-        for (int n = 0; n < sampleCount; n++)
+        // First pass: calculate means (parallel if system allows, otherwise sequential)
+        ParallelismCoordinator.For(0, featureCount, f =>
         {
-            float[] sampleFeatures = samples[n].Features;
-            double nPlus1 = n + 1;
-            for (int f = 0; f < featureCount; f++)
+            double sum = 0;
+            for (int i = 0; i < sampleCount; i++)
             {
-                double x = sampleFeatures[f];
-                double delta = x - means[f];
-                means[f] += delta / nPlus1;
-                m2[f] += delta * (x - means[f]);
+                sum += samples[i].Features[f];
             }
-        }
+            means[f] = sum / sampleCount;
+        });
 
-        // Calculate standard deviations
-        for (int f = 0; f < featureCount; f++)
+        // Second pass: calculate standard deviations
+        ParallelismCoordinator.For(0, featureCount, f =>
         {
-            stds[f] = Math.Sqrt(m2[f] / sampleCount);
-            if (stds[f] < 1e-8) stds[f] = 1.0; // Avoid division by zero
-        }
+            double sumSquaredDiff = 0;
+            double mean = means[f];
+            for (int i = 0; i < sampleCount; i++)
+            {
+                double diff = samples[i].Features[f] - mean;
+                sumSquaredDiff += diff * diff;
+            }
+            stds[f] = Math.Sqrt(sumSquaredDiff / sampleCount);
+            if (stds[f] < 1e-8) stds[f] = 1.0;
+        });
 
-        // Normalize samples - create new feature arrays
-        List<TrainingSample> normalizedSamples = new(sampleCount);
-        for (int i = 0; i < sampleCount; i++)
+        // Normalize samples
+        TrainingSample[] normalizedSamples = new TrainingSample[sampleCount];
+        ParallelismCoordinator.For(0, sampleCount, i =>
         {
             TrainingSample s = samples[i];
             float[] normalizedFeatures = new float[featureCount];
@@ -228,21 +222,18 @@ public static class FeatureEngineering
             {
                 normalizedFeatures[f] = (float)((s.Features[f] - means[f]) / stds[f]);
             }
-            normalizedSamples.Add(s with { Features = normalizedFeatures });
-        }
-
-        // Copy stats to arrays for storage
-        double[] finalMeans = meansArray ?? means.ToArray();
-        double[] finalStds = stdsArray ?? stds.ToArray();
+            normalizedSamples[i] = s with { Features = normalizedFeatures };
+        });
 
         return (
-            data with { Samples = normalizedSamples },
-            new NormalizationStats { Means = finalMeans, StandardDeviations = finalStds }
+            data with { Samples = normalizedSamples.ToList() },
+            new NormalizationStats { Means = means, StandardDeviations = stds }
         );
     }
 
     /// <summary>
     /// Applies existing normalization statistics to new data.
+    /// Server-ready: uses ParallelismCoordinator for global thread management.
     /// </summary>
     public static TrainingData ApplyNormalization(TrainingData data, NormalizationStats stats)
     {
@@ -251,9 +242,9 @@ public static class FeatureEngineering
         IReadOnlyList<TrainingSample> samples = data.Samples;
         double[] means = stats.Means;
         double[] stds = stats.StandardDeviations;
-        
-        List<TrainingSample> normalizedSamples = new(sampleCount);
-        for (int i = 0; i < sampleCount; i++)
+
+        TrainingSample[] normalizedSamples = new TrainingSample[sampleCount];
+        ParallelismCoordinator.For(0, sampleCount, i =>
         {
             TrainingSample s = samples[i];
             float[] normalizedFeatures = new float[featureCount];
@@ -261,10 +252,10 @@ public static class FeatureEngineering
             {
                 normalizedFeatures[f] = (float)((s.Features[f] - means[f]) / stds[f]);
             }
-            normalizedSamples.Add(s with { Features = normalizedFeatures });
-        }
+            normalizedSamples[i] = s with { Features = normalizedFeatures };
+        });
 
-        return data with { Samples = normalizedSamples };
+        return data with { Samples = normalizedSamples.ToList() };
     }
 }
 

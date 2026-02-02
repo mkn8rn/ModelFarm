@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ModelFarm.Infrastructure.Persistence;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ModelFarm.Infrastructure.Persistence.Migrations.App
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260202102154_AddResourceQueuesWithContainerRefs")]
+    partial class AddResourceQueuesWithContainerRefs
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -219,8 +222,8 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                         .HasColumnType("boolean")
                         .HasColumnName("is_default");
 
-                    b.Property<long>("MaxCapacity")
-                        .HasColumnType("bigint")
+                    b.Property<int>("MaxCapacity")
+                        .HasColumnType("integer")
                         .HasColumnName("max_capacity");
 
                     b.Property<string>("Name")
@@ -236,12 +239,12 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                     b.HasKey("Id")
                         .HasName("pk_resource_containers");
 
+                    b.HasIndex("Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_resource_containers_name");
+
                     b.HasIndex("Type")
                         .HasDatabaseName("ix_resource_containers_type");
-
-                    b.HasIndex("Name", "Type")
-                        .IsUnique()
-                        .HasDatabaseName("ix_resource_containers_name_type");
 
                     b.HasIndex("Type", "IsDefault")
                         .HasDatabaseName("ix_resource_containers_type_is_default");
@@ -281,23 +284,11 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                         .HasColumnType("integer")
                         .HasColumnName("max_concurrent_jobs");
 
-                    b.Property<TimeSpan?>("MaxJobDuration")
-                        .HasColumnType("interval")
-                        .HasColumnName("max_job_duration");
-
-                    b.Property<TimeSpan?>("MaxQueueWaitTime")
-                        .HasColumnType("interval")
-                        .HasColumnName("max_queue_wait_time");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
                         .HasColumnName("name");
-
-                    b.Property<Guid?>("RamContainerId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("ram_container_id");
 
                     b.HasKey("Id")
                         .HasName("pk_resource_queues");
@@ -327,6 +318,10 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                         .HasColumnType("integer")
                         .HasColumnName("checkpoint_interval_epochs");
 
+                    b.Property<Guid?>("CpuContainerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cpu_container_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -351,6 +346,10 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                     b.Property<int>("ForecastHorizon")
                         .HasColumnType("integer")
                         .HasColumnName("forecast_horizon");
+
+                    b.Property<Guid?>("GpuContainerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("gpu_container_id");
 
                     b.Property<string>("HiddenLayerSizesJson")
                         .IsRequired()

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ModelFarm.Infrastructure.Persistence;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ModelFarm.Infrastructure.Persistence.Migrations.App
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260202095831_AddResourceContainers")]
+    partial class AddResourceContainers
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -219,8 +222,8 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                         .HasColumnType("boolean")
                         .HasColumnName("is_default");
 
-                    b.Property<long>("MaxCapacity")
-                        .HasColumnType("bigint")
+                    b.Property<int>("MaxCapacity")
+                        .HasColumnType("integer")
                         .HasColumnName("max_capacity");
 
                     b.Property<string>("Name")
@@ -236,80 +239,17 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                     b.HasKey("Id")
                         .HasName("pk_resource_containers");
 
+                    b.HasIndex("Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_resource_containers_name");
+
                     b.HasIndex("Type")
                         .HasDatabaseName("ix_resource_containers_type");
-
-                    b.HasIndex("Name", "Type")
-                        .IsUnique()
-                        .HasDatabaseName("ix_resource_containers_name_type");
 
                     b.HasIndex("Type", "IsDefault")
                         .HasDatabaseName("ix_resource_containers_type_is_default");
 
                     b.ToTable("resource_containers", "app");
-                });
-
-            modelBuilder.Entity("ModelFarm.Infrastructure.Persistence.Entities.ResourceQueueEntity", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<Guid>("CpuContainerId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("cpu_container_id");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("description");
-
-                    b.Property<Guid>("GpuContainerId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("gpu_container_id");
-
-                    b.Property<bool>("IsDefault")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_default");
-
-                    b.Property<int>("MaxConcurrentJobs")
-                        .HasColumnType("integer")
-                        .HasColumnName("max_concurrent_jobs");
-
-                    b.Property<TimeSpan?>("MaxJobDuration")
-                        .HasColumnType("interval")
-                        .HasColumnName("max_job_duration");
-
-                    b.Property<TimeSpan?>("MaxQueueWaitTime")
-                        .HasColumnType("interval")
-                        .HasColumnName("max_queue_wait_time");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("name");
-
-                    b.Property<Guid?>("RamContainerId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("ram_container_id");
-
-                    b.HasKey("Id")
-                        .HasName("pk_resource_queues");
-
-                    b.HasIndex("IsDefault")
-                        .HasDatabaseName("ix_resource_queues_is_default");
-
-                    b.HasIndex("Name")
-                        .IsUnique()
-                        .HasDatabaseName("ix_resource_queues_name");
-
-                    b.ToTable("resource_queues", "app");
                 });
 
             modelBuilder.Entity("ModelFarm.Infrastructure.Persistence.Entities.TrainingConfigurationEntity", b =>
@@ -326,6 +266,10 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                     b.Property<int>("CheckpointIntervalEpochs")
                         .HasColumnType("integer")
                         .HasColumnName("checkpoint_interval_epochs");
+
+                    b.Property<Guid?>("CpuContainerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cpu_container_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -351,6 +295,10 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                     b.Property<int>("ForecastHorizon")
                         .HasColumnType("integer")
                         .HasColumnName("forecast_horizon");
+
+                    b.Property<Guid?>("GpuContainerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("gpu_container_id");
 
                     b.Property<string>("HiddenLayerSizesJson")
                         .IsRequired()
@@ -531,10 +479,6 @@ namespace ModelFarm.Infrastructure.Persistence.Migrations.App
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)")
                         .HasColumnName("name");
-
-                    b.Property<Guid?>("QueueId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("queue_id");
 
                     b.Property<string>("ResultJson")
                         .HasColumnType("text")

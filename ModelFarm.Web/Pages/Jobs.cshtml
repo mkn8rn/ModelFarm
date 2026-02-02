@@ -8,25 +8,16 @@
 
 <div class="row">
     <div class="col-md-4">
-        <!-- Concurrency Settings Card -->
+        <!-- Resource Usage Card -->
         <div class="card mb-3">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span>Concurrency Settings</span>
-                <span class="badge bg-info" id="runningJobsBadge" data-bs-toggle="tooltip" title="Number of jobs currently running">0 running</span>
+                <span><i class="bi bi-speedometer2 me-1"></i>Queue Status</span>
+                <button class="btn btn-sm btn-link p-0" onclick="loadResourceStatus()" title="Refresh">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
             </div>
-            <div class="card-body">
-                <form id="concurrencyForm">
-                    <div class="mb-2">
-                        <label class="form-label" data-bs-toggle="tooltip" title="Maximum number of training jobs that can run simultaneously. Lower values reduce memory usage but increase queue wait times.">
-                            Max Concurrent Jobs
-                        </label>
-                        <div class="input-group input-group-sm">
-                            <input type="number" class="form-control" id="maxConcurrentJobs" min="1" value="1">
-                            <button type="submit" class="btn btn-outline-primary">Apply</button>
-                        </div>
-                        <small class="text-muted">Minimum: 1. Set based on your hardware capacity.</small>
-                    </div>
-                </form>
+            <div class="card-body p-2" id="resourceStatusCard">
+                <div class="text-muted small">Loading...</div>
             </div>
         </div>
 
@@ -38,6 +29,12 @@
                         <label class="form-label" data-bs-toggle="tooltip" title="The training configuration to use for this job. Each configuration defines the model architecture, hyperparameters, dataset, and performance requirements.">Configuration</label>
                         <select class="form-select form-select-sm" id="jobConfigSelect" required>
                             <option value="">Select a configuration...</option>
+                        </select>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" data-bs-toggle="tooltip" title="The resource queue to run this job in. Queues define CPU/GPU resource allocation.">Queue</label>
+                        <select class="form-select form-select-sm" id="jobQueueSelect" required>
+                            <option value="">Loading queues...</option>
                         </select>
                     </div>
                     <div class="mb-2">
@@ -56,21 +53,30 @@
     </div>
     <div class="col-md-8">
         <div class="card">
-            <div class="card-header d-flex justify-content-between">
-                <span>Training Jobs</span>
-                <button class="btn btn-sm btn-outline-secondary" onclick="loadJobs()">Refresh</button>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <span class="me-3">Training Jobs</span>
+                    <ul class="nav nav-pills d-inline-flex" id="queueTabs" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active py-1 px-2" id="tab-all" data-queue-id="" type="button" onclick="filterByQueue('')">All</button>
+                        </li>
+                        <!-- Queue tabs will be added dynamically -->
+                    </ul>
+                </div>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadJobs()"><i class="bi bi-arrow-clockwise"></i></button>
             </div>
             <div class="card-body p-0">
                 <table class="table table-sm table-striped mb-0">
                     <thead>
                         <tr>
                             <th>Name</th>
+                            <th>Queue</th>
                             <th>Status</th>
                             <th>Attempt</th>
                             <th style="width: 150px;">Progress</th>
                             <th>Train Loss</th>
                             <th>Val Loss</th>
-                            <th style="width: 100px;"></th>
+                            <th style="width: 120px;"></th>
                         </tr>
                     </thead>
                     <tbody id="jobsBody"></tbody>
@@ -135,7 +141,8 @@
 <script>
     let jobPollIntervals = {};
     let currentJobs = [];
-    let currentMaxConcurrent = 1;
+    let allQueues = [];
+    let currentQueueFilter = '';  // '' = all, or a queue ID
     const csrfToken = '@Html.AntiForgeryToken()'.match(/value="([^"]+)"/)?.[1] || '';
 
     // Initialize Bootstrap tooltips
@@ -151,6 +158,111 @@
         return fetch(url, { method: 'POST', body });
     }
 
+    // ==================== Resource Status ====================
+    
+    async function loadResourceStatus() {
+        try {
+            const res = await fetch('?handler=ResourceStatus');
+            const data = await res.json();
+            const card = document.getElementById('resourceStatusCard');
+            allQueues = data.queues;
+            
+            // Update queue tabs
+            updateQueueTabs(data.queues);
+            
+            if (data.queues.length === 0) {
+                card.innerHTML = '<div class="text-muted small">No queues configured. <a href="/Resources">Create one</a></div>';
+                return;
+            }
+            
+            let html = '';
+            for (const q of data.queues) {
+                const usagePercent = q.maxConcurrentJobs > 0 ? (q.runningJobs / q.maxConcurrentJobs * 100) : 0;
+                const barClass = usagePercent >= 100 ? 'bg-danger' : usagePercent >= 50 ? 'bg-warning' : 'bg-success';
+                const queueBadge = q.queuedJobs > 0 ? `<span class="badge bg-secondary ms-1">${q.queuedJobs} waiting</span>` : '';
+                const defaultBadge = q.isDefault ? '<span class="badge bg-primary ms-1">Default</span>' : '';
+                
+                
+                html += `
+                    <div class="mb-2">
+                        <div class="d-flex justify-content-between align-items-center small">
+                            <span><i class="bi bi-collection me-1"></i>${q.name}${defaultBadge}</span>
+                            <span>${q.runningJobs}/${q.maxConcurrentJobs}${queueBadge}</span>
+                        </div>
+                        <div class="progress" style="height: 6px;">
+                            <div class="progress-bar ${barClass}" style="width: ${usagePercent}%"></div>
+                        </div>
+                        <div class="small text-muted" style="font-size: 0.7rem;">
+                            <i class="bi bi-cpu"></i>${q.cpuContainerName} + <i class="bi bi-gpu-card"></i>${q.gpuContainerName}
+                        </div>
+                    </div>
+                `;
+            }
+            card.innerHTML = html;
+        } catch (e) {
+            console.error('Failed to load resource status:', e);
+        }
+    }
+
+    function updateQueueTabs(queues) {
+        const tabList = document.getElementById('queueTabs');
+        // Keep the "All" tab, remove queue-specific tabs
+        const allTab = tabList.querySelector('#tab-all').parentElement;
+        tabList.innerHTML = '';
+        tabList.appendChild(allTab);
+        
+        // Add a tab for each queue
+        for (const q of queues) {
+            const li = document.createElement('li');
+            li.className = 'nav-item';
+            li.setAttribute('role', 'presentation');
+            const isActive = currentQueueFilter === q.queueId;
+            li.innerHTML = `<button class="nav-link py-1 px-2 ${isActive ? 'active' : ''}" data-queue-id="${q.queueId}" type="button" onclick="filterByQueue('${q.queueId}')">${q.name}</button>`;
+            tabList.appendChild(li);
+        }
+        
+        // Update active state on All tab
+        document.getElementById('tab-all').className = `nav-link py-1 px-2 ${currentQueueFilter === '' ? 'active' : ''}`;
+    }
+
+    function filterByQueue(queueId) {
+        currentQueueFilter = queueId;
+        // Update tab active states
+        document.querySelectorAll('#queueTabs .nav-link').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.queueId === queueId);
+        });
+        renderJobs();
+    }
+
+    async function loadQueues() {
+        try {
+            const res = await fetch('?handler=Queues');
+            const queues = await res.json();
+            const select = document.getElementById('jobQueueSelect');
+            const currentValue = select.value;  // Preserve current selection
+            
+            if (queues.length === 0) {
+                select.innerHTML = '<option value="">No queues available - create one first</option>';
+                return;
+            }
+            
+            select.innerHTML = queues.map(q => {
+                const defaultLabel = q.isDefault ? ' (Default)' : '';
+                return `<option value="${q.queueId}">${q.name}${defaultLabel} - ${q.runningJobs}/${q.maxConcurrentJobs} jobs</option>`;
+            }).join('');
+            
+            // Restore selection, or select default if no previous selection
+            if (currentValue && queues.some(q => q.queueId === currentValue)) {
+                select.value = currentValue;
+            } else {
+                const defaultQueue = queues.find(q => q.isDefault);
+                if (defaultQueue) select.value = defaultQueue.queueId;
+            }
+        } catch (e) {
+            console.error('Failed to load queues:', e);
+        }
+    }
+
     // ==================== Training Jobs ====================
     
     document.getElementById('jobForm').addEventListener('submit', async (e) => {
@@ -162,8 +274,15 @@
             return;
         }
         
+        const queueId = document.getElementById('jobQueueSelect').value;
+        if (!queueId) {
+            alert('Please select a queue');
+            return;
+        }
+        
         const form = new FormData();
         form.append('ConfigurationId', configId);
+        form.append('QueueId', queueId);
         
         const jobName = document.getElementById('jobName').value;
         if (jobName) form.append('JobName', jobName);
@@ -173,6 +292,7 @@
         if (data.success) {
             document.getElementById('jobName').value = '';
             loadJobs();
+            loadResourceStatus();
         } else {
             alert(data.error);
         }
@@ -191,92 +311,11 @@
         if (currentValue) select.value = currentValue;
     }
 
-    // ==================== Concurrency Settings ====================
-    
-    async function loadConcurrencySettings(updateForm = true) {
-        const res = await fetch('?handler=ConcurrencySettings');
-        const data = await res.json();
-        currentMaxConcurrent = data.maxConcurrent;
-        if (updateForm) {
-            document.getElementById('maxConcurrentJobs').value = data.maxConcurrent;
-        }
-        updateRunningBadge();
-    }
-
-    function updateRunningBadge() {
-        // Count only actually running jobs (status 1-4), not queued (status 0)
-        const actuallyRunning = currentJobs.filter(j => j.status >= 1 && j.status <= 4 && !j.isPaused).length;
-        const badge = document.getElementById('runningJobsBadge');
-        badge.textContent = `${actuallyRunning}/${currentMaxConcurrent} running`;
-        badge.className = actuallyRunning > 0 ? 'badge bg-success' : 'badge bg-secondary';
-    }
-
-    document.getElementById('concurrencyForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const maxJobs = parseInt(document.getElementById('maxConcurrentJobs').value);
-        
-        const form = new FormData();
-        form.append('MaxConcurrentJobs', maxJobs);
-        
-        const res = await postWithToken('?handler=SetConcurrency', form);
-        const data = await res.json();
-        if (data.success) {
-            document.getElementById('maxConcurrentJobs').value = data.maxConcurrent;
-            currentMaxConcurrent = data.maxConcurrent;
-            updateRunningBadge();
-        }
-    });
-    
     async function loadJobs() {
         const res = await fetch('?handler=Jobs');
         const jobs = await res.json();
         currentJobs = jobs;
-        updateRunningBadge();
-        const tbody = document.getElementById('jobsBody');
-        tbody.innerHTML = jobs.map(j => {
-            const isActive = j.status >= 0 && j.status <= 4;
-            const isPaused = j.isPaused;
-            const isCompleted = j.status === 5;
-            const isFailed = j.status === 6;
-            const isCancelled = j.status === 7;
-            const progressClass = isActive && !isPaused ? 'progress-bar-striped progress-bar-animated' : '';
-            const progressColor = isCompleted ? 'bg-success' : isFailed ? 'bg-danger' : isPaused ? 'bg-warning' : '';
-            
-            let buttons = '';
-            if (isActive && !isPaused) {
-                buttons += `<button class="btn btn-sm btn-outline-warning me-1" onclick="pauseJob('${j.id}')" title="Pause"><i class="bi bi-pause-fill"></i></button>`;
-                buttons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${j.id}')" title="Cancel"><i class="bi bi-x-lg"></i></button>`;
-            } else if (isPaused) {
-                buttons += `<button class="btn btn-sm btn-outline-success me-1" onclick="resumePausedJob('${j.id}')" title="Resume"><i class="bi bi-play-fill"></i></button>`;
-                buttons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${j.id}')" title="Cancel"><i class="bi bi-x-lg"></i></button>`;
-            } else if (isCompleted) {
-                buttons += `<button class="btn btn-sm btn-outline-primary me-1" onclick="showResults('${j.id}')" title="Results"><i class="bi bi-bar-chart-fill"></i></button>`;
-                if (!j.result?.meetsRequirements) {
-                    buttons += `<button class="btn btn-sm btn-outline-secondary" onclick="retryJob('${j.id}')" title="Retry from start"><i class="bi bi-arrow-clockwise"></i></button>`;
-                }
-            } else if (isFailed || isCancelled) {
-                if (j.hasCheckpoint) {
-                    buttons += `<button class="btn btn-sm btn-outline-success me-1" onclick="resumeFromCheckpoint('${j.id}')" title="Resume from checkpoint"><i class="bi bi-skip-forward-fill"></i></button>`;
-                }
-                buttons += `<button class="btn btn-sm btn-outline-secondary" onclick="retryJob('${j.id}')" title="Retry from start"><i class="bi bi-arrow-clockwise"></i></button>`;
-            }
-            
-            return `
-            <tr data-job-id="${j.id}">
-                <td>${j.name}</td>
-                <td><span class="badge bg-${jobStatusColor(j.status)}${isPaused ? ' bg-warning' : ''}">${isPaused ? 'Paused' : jobStatusText(j.status)}</span></td>
-                <td><span class="badge bg-secondary">${j.currentAttempt || 1}/${j.maxAttempts || 1}</span></td>
-                <td>
-                    <div class="progress" style="height:18px;">
-                        <div class="progress-bar ${progressClass} ${progressColor}" style="width:${j.progressPercent}%"></div>
-                    </div>
-                    <small class="text-muted">${j.currentEpoch}/${j.totalEpochs} epochs</small>
-                </td>
-                <td>${j.trainingLoss?.toFixed(6) ?? '-'}</td>
-                <td>${j.validationLoss?.toFixed(6) ?? '-'}</td>
-                <td class="text-nowrap">${buttons}</td>
-            </tr>`;
-        }).join('');
+        renderJobs();
         
         jobs.filter(j => j.status >= 0 && j.status <= 4).forEach(j => {
             if (!jobPollIntervals[j.id]) {
@@ -290,6 +329,84 @@
                 delete jobPollIntervals[j.id];
             }
         });
+    }
+
+    function renderJobs() {
+        // Filter jobs by current queue filter
+        const jobs = currentQueueFilter 
+            ? currentJobs.filter(j => j.queueId === currentQueueFilter)
+            : currentJobs;
+        
+        const tbody = document.getElementById('jobsBody');
+        
+        if (jobs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-muted text-center">No jobs found</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = jobs.map(j => {
+            const isActive = j.status >= 0 && j.status <= 4;
+            const isPaused = j.isPaused;
+            const isCompleted = j.status === 5;
+            const isFailed = j.status === 6;
+            const isCancelled = j.status === 7;
+            const progressClass = isActive && !isPaused ? 'progress-bar-striped progress-bar-animated' : '';
+            const progressColor = isCompleted ? 'bg-success' : isFailed ? 'bg-danger' : isPaused ? 'bg-warning' : '';
+            
+            // Find queue name
+            const queue = allQueues.find(q => q.queueId === j.queueId);
+            const queueName = queue ? queue.name : '-';
+            
+            let buttons = '';
+            if (isActive && !isPaused) {
+                buttons += `<button class="btn btn-sm btn-outline-warning me-1" onclick="pauseJob('${j.id}')" title="Pause"><i class="bi bi-pause-fill"></i></button>`;
+                buttons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${j.id}')" title="Cancel"><i class="bi bi-x-lg"></i></button>`;
+            } else if (isPaused) {
+                buttons += `<button class="btn btn-sm btn-outline-success me-1" onclick="resumePausedJob('${j.id}')" title="Resume"><i class="bi bi-play-fill"></i></button>`;
+                buttons += `<button class="btn btn-sm btn-outline-danger" onclick="cancelJob('${j.id}')" title="Cancel"><i class="bi bi-x-lg"></i></button>`;
+            } else if (isCompleted) {
+                buttons += `<button class="btn btn-sm btn-outline-primary me-1" onclick="showResults('${j.id}')" title="Results"><i class="bi bi-bar-chart-fill"></i></button>`;
+                if (!j.result?.meetsRequirements) {
+                    buttons += `<button class="btn btn-sm btn-outline-secondary me-1" onclick="retryJob('${j.id}')" title="Retry from start"><i class="bi bi-arrow-clockwise"></i></button>`;
+                }
+                buttons += `<button class="btn btn-sm btn-outline-danger" onclick="deleteJob('${j.id}')" title="Delete"><i class="bi bi-trash"></i></button>`;
+            } else if (isFailed || isCancelled) {
+                if (j.hasCheckpoint) {
+                    buttons += `<button class="btn btn-sm btn-outline-success me-1" onclick="resumeFromCheckpoint('${j.id}')" title="Resume from checkpoint"><i class="bi bi-skip-forward-fill"></i></button>`;
+                }
+                buttons += `<button class="btn btn-sm btn-outline-secondary me-1" onclick="retryJob('${j.id}')" title="Retry from start"><i class="bi bi-arrow-clockwise"></i></button>`;
+                buttons += `<button class="btn btn-sm btn-outline-danger" onclick="deleteJob('${j.id}')" title="Delete"><i class="bi bi-trash"></i></button>`;
+            }
+            
+            return `
+            <tr data-job-id="${j.id}">
+                <td>${j.name}</td>
+                <td><small class="text-muted">${queueName}</small></td>
+                <td><span class="badge bg-${jobStatusColor(j.status)}${isPaused ? ' bg-warning' : ''}">${isPaused ? 'Paused' : jobStatusText(j.status)}</span></td>
+                <td><span class="badge bg-secondary">${j.currentAttempt || 1}/${j.maxAttempts || 1}</span></td>
+                <td>
+                    <div class="progress" style="height:18px;">
+                        <div class="progress-bar ${progressClass} ${progressColor}" style="width:${j.progressPercent}%"></div>
+                    </div>
+                    <small class="text-muted">${j.currentEpoch}/${j.totalEpochs} epochs</small>
+                </td>
+                <td>${j.trainingLoss?.toFixed(6) ?? '-'}</td>
+                <td>${j.validationLoss?.toFixed(6) ?? '-'}</td>
+                <td class="text-nowrap">${buttons}</td>
+            </tr>`;
+        }).join('');
+    }
+    
+    async function deleteJob(jobId) {
+        const form = new FormData();
+        form.append('jobId', jobId);
+        const res = await postWithToken('?handler=DeleteJob', form);
+        const data = await res.json();
+        if (data.success) {
+            loadJobs();
+        } else {
+            alert(data.error || 'Failed to delete job');
+        }
     }
     
     async function pollJobStatus(jobId) {
@@ -333,13 +450,15 @@
                     setTimeout(loadJobs, 500);
                 }
                 
-                // Update epoch count
-                row.querySelectorAll('small')[0].textContent = `${job.currentEpoch}/${job.totalEpochs} epochs`;
+                // Update epoch count - find the small element inside the progress cell (td index 4)
+                const progressCell = row.querySelectorAll('td')[4];
+                const epochText = progressCell.querySelector('small');
+                if (epochText) epochText.textContent = `${job.currentEpoch}/${job.totalEpochs} epochs`;
                 
-                // Update losses
+                // Update losses (td index 5 = Train Loss, td index 6 = Val Loss)
                 const cells = row.querySelectorAll('td');
-                cells[4].textContent = job.trainingLoss?.toFixed(6) ?? '-';
-                cells[5].textContent = job.validationLoss?.toFixed(6) ?? '-';
+                cells[5].textContent = job.trainingLoss?.toFixed(6) ?? '-';
+                cells[6].textContent = job.validationLoss?.toFixed(6) ?? '-';
                 
             } catch (e) {
                 console.error('Failed to poll job status:', e);
@@ -439,12 +558,12 @@
     // ==================== Init ====================
     loadConfigs();
     loadJobs();
-    loadConcurrencySettings();
+    loadResourceStatus();
+    loadQueues();
     
     setInterval(loadConfigs, 10000);
-    
-    // Periodically refresh running job count badge only (don't overwrite form input)
-    setInterval(() => loadConcurrencySettings(false), 2000);
+    setInterval(loadResourceStatus, 3000);  // Refresh queue status every 3 seconds
+    setInterval(loadQueues, 5000);  // Refresh queue selector every 5 seconds
     
     setInterval(() => {
         if (Object.keys(jobPollIntervals).length === 0) {

@@ -106,6 +106,38 @@
                     </div>
 
                     <hr class="my-2">
+                    <small class="text-muted">Inference Settings</small>
+                    <div class="row">
+                        <div class="col-12 mb-2">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="configUseGpuForInference">
+                                <label class="form-check-label small" for="configUseGpuForInference" data-bs-toggle="tooltip" title="Use GPU for model predictions when available. Recommended for larger models (MLP, LSTM). For small models like Linear Regression, CPU is often faster due to memory transfer overhead.">
+                                    <i class="bi bi-gpu-card"></i> Use GPU for Inference
+                                </label>
+                            </div>
+                            <small class="text-muted d-block mt-1">Enable for large models with many predictions. CPU is faster for small models.</small>
+                        </div>
+                    </div>
+
+                    <hr class="my-2">
+                    <small class="text-muted">Resource Containers</small>
+                    <div class="row">
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="CPU container for preprocessing, normalization, and backtesting. Controls thread allocation.">
+                                <i class="bi bi-cpu"></i> CPU Container
+                            </label>
+                            <select class="form-select form-select-sm" id="configCpuContainer"></select>
+                        </div>
+                        <div class="col-6 mb-2">
+                            <label class="form-label small" data-bs-toggle="tooltip" title="GPU container for training and inference. Controls GPU device allocation.">
+                                <i class="bi bi-gpu-card"></i> GPU Container
+                            </label>
+                            <select class="form-select form-select-sm" id="configGpuContainer"></select>
+                        </div>
+                    </div>
+                    <div id="detectedHardware" class="small text-muted mb-2"></div>
+
+                    <hr class="my-2">
                     <small class="text-muted">Retry Settings</small>
                     <div class="row">
                         <div class="col-6 mb-2">
@@ -235,6 +267,7 @@
         });
         if (selectedType) {
             loadDatasets();
+            loadContainers();
         }
     });
 
@@ -258,6 +291,13 @@
         // Checkpoint settings
         form.append('SaveCheckpoints', document.getElementById('configSaveCheckpoints').checked);
         form.append('CheckpointIntervalEpochs', document.getElementById('configCheckpointInterval').value);
+        // Inference settings
+        form.append('UseGpuForInference', document.getElementById('configUseGpuForInference').checked);
+        // Resource containers
+        const cpuContainer = document.getElementById('configCpuContainer').value;
+        const gpuContainer = document.getElementById('configGpuContainer').value;
+        if (cpuContainer) form.append('CpuContainerId', cpuContainer);
+        if (gpuContainer) form.append('GpuContainerId', gpuContainer);
         // Retry settings
         form.append('RetryUntilSuccess', document.getElementById('configRetryUntilSuccess').checked);
         form.append('MaxRetryAttempts', document.getElementById('configMaxRetries').value);
@@ -282,6 +322,35 @@
             alert(data.error);
         }
     });
+
+    async function loadContainers() {
+        const res = await fetch('?handler=Containers');
+        const data = await res.json();
+        
+        const cpuSelect = document.getElementById('configCpuContainer');
+        const gpuSelect = document.getElementById('configGpuContainer');
+        const hardwareDiv = document.getElementById('detectedHardware');
+        
+        // Populate CPU containers
+        const cpuContainers = data.containers.filter(c => c.type === 0);
+        cpuSelect.innerHTML = cpuContainers.map(c => {
+            const defaultLabel = c.isDefault ? ' ?' : '';
+            const usageLabel = `${c.currentUsage}/${c.maxCapacity}`;
+            return `<option value="${c.containerId}" ${c.isDefault ? 'selected' : ''}>${c.name}${defaultLabel} (${usageLabel})</option>`;
+        }).join('');
+        
+        // Populate GPU containers
+        const gpuContainers = data.containers.filter(c => c.type === 1);
+        gpuSelect.innerHTML = gpuContainers.map(c => {
+            const defaultLabel = c.isDefault ? ' ?' : '';
+            const usageLabel = `${c.currentUsage}/${c.maxCapacity}`;
+            return `<option value="${c.containerId}" ${c.isDefault ? 'selected' : ''}>${c.name}${defaultLabel} (${usageLabel})</option>`;
+        }).join('');
+        
+        // Show detected hardware
+        const hw = data.hardware;
+        hardwareDiv.innerHTML = `<i class="bi bi-info-circle"></i> Detected: ${hw.cpuCores} CPU cores, ${hw.gpuDevices} GPU device(s)${hw.cudaAvailable ? ' (CUDA available)' : ''}`;
+    }
 
     async function loadDatasets() {
         const res = await fetch('?handler=Datasets');

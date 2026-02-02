@@ -12,74 +12,47 @@ namespace ModelFarm.Application.Services;
 
 public sealed class TrainingService : ITrainingService
 {
-    private readonly IDatasetService _datasetService;
-    private readonly IModelTrainer _modelTrainer;
-    private readonly BacktestEngine _backtestEngine;
-    private readonly IDbContextFactory<ApplicationDbContext> _dbContextFactory;
-    private readonly IUserContextService _userContext;
-    private readonly CheckpointManager _checkpointManager;
+private readonly IDatasetService _datasetService;
+private readonly IModelTrainer _modelTrainer;
+private readonly BacktestEngine _backtestEngine;
+private readonly IDbContextFactory<ApplicationDbContext> _dbContextFactory;
+private readonly IUserContextService _userContext;
+private readonly IResourceQueueService _queueService;
+private readonly CheckpointManager _checkpointManager;
 
-    // Runtime state for active jobs (not persisted - only used while training is in progress)
-    private static readonly ConcurrentDictionary<Guid, TrainingJobRuntimeState> _activeJobs = new();
-    
-    // Semaphore to limit concurrent training operations to prevent GPU/memory exhaustion
-    // Default to 1 concurrent job to avoid TorchSharp ExternalException errors
-    private static SemaphoreSlim _trainingSemaphore = new(1, int.MaxValue);
-    private static int _maxConcurrentJobs = 1;
-    private static readonly object _semaphoreLock = new();
+// Runtime state for active jobs (not persisted - only used while training is in progress)
+private static readonly ConcurrentDictionary<Guid, TrainingJobRuntimeState> _activeJobs = new();
 
-    public TrainingService(
-        IDatasetService datasetService,
-        IModelTrainer modelTrainer,
-        BacktestEngine backtestEngine,
-        IDbContextFactory<ApplicationDbContext> dbContextFactory,
-        IUserContextService userContext)
-    {
-        _datasetService = datasetService;
-        _modelTrainer = modelTrainer;
-        _backtestEngine = backtestEngine;
-        _dbContextFactory = dbContextFactory;
-        _userContext = userContext;
-        _checkpointManager = new CheckpointManager();
-    }
+public TrainingService(
+    IDatasetService datasetService,
+    IModelTrainer modelTrainer,
+    BacktestEngine backtestEngine,
+    IDbContextFactory<ApplicationDbContext> dbContextFactory,
+    IUserContextService userContext,
+    IResourceQueueService queueService)
+{
+    _datasetService = datasetService;
+    _modelTrainer = modelTrainer;
+    _backtestEngine = backtestEngine;
+    _dbContextFactory = dbContextFactory;
+    _userContext = userContext;
+    _queueService = queueService;
+    _checkpointManager = new CheckpointManager();
+}
 
-    // ==================== Concurrency Settings ====================
+// ==================== Concurrency Settings (for backward compatibility) ====================
 
-    public int GetMaxConcurrentJobs() => _maxConcurrentJobs;
+public int GetMaxConcurrentJobs() => 1;  // Now managed by queues
 
-    public void SetMaxConcurrentJobs(int maxConcurrent)
-    {
-        if (maxConcurrent < 1)
-            maxConcurrent = 1;
-        
-        lock (_semaphoreLock)
-        {
-            if (maxConcurrent == _maxConcurrentJobs)
-                return;
+public void SetMaxConcurrentJobs(int maxConcurrent) { }  // No-op, managed by queues
 
-            var oldMax = _maxConcurrentJobs;
-            _maxConcurrentJobs = maxConcurrent;
-
-            // Adjust semaphore capacity
-            if (maxConcurrent > oldMax)
-            {
-                // Release additional slots
-                var diff = maxConcurrent - oldMax;
-                _trainingSemaphore.Release(diff);
-            }
-            // Note: If reducing, we can't forcibly remove slots that are in use.
-            // The semaphore will naturally enforce the new limit as jobs complete.
-        }
-    }
-
-    public int GetRunningJobCount()
-    {
-        // Count jobs that are actively training (not waiting for slot)
-        return _activeJobs.Values.Count(j => !j.CancellationTokenSource.IsCancellationRequested);
-    }
+public int GetRunningJobCount()
+{
+    return _activeJobs.Values.Count(j => !j.CancellationTokenSource.IsCancellationRequested);
+}
 
 
-    // ==================== Configuration Management ====================
+// ==================== Configuration Management ====================
 
     public async Task<TrainingConfiguration> CreateConfigurationAsync(CreateTrainingConfigurationRequest request, CancellationToken cancellationToken = default)
     {
@@ -110,6 +83,7 @@ public sealed class TrainingService : ITrainingService
             ShuffleOnRetry = request.ShuffleOnRetry,
             ScaleLearningRateOnRetry = request.ScaleLearningRateOnRetry,
             LearningRateRetryScale = request.LearningRateRetryScale,
+            UseGpuForInference = request.UseGpuForInference,
             PerformanceRequirements = request.PerformanceRequirements,
             TradingEnvironment = request.TradingEnvironment,
             CreatedAtUtc = DateTime.UtcNow
@@ -243,12 +217,21 @@ public sealed class TrainingService : ITrainingService
 
         var maxAttempts = config.RetryUntilSuccess ? config.MaxRetryAttempts : 1;
 
+        // Resolve queue ID - use specified queue or fall back to default
+        var queueId = request.QueueId;
+        if (!queueId.HasValue)
+        {
+            var defaultQueue = await _queueService.GetDefaultQueueAsync(cancellationToken);
+            queueId = defaultQueue?.Id;
+        }
+
         var job = new TrainingJob
         {
             Id = jobId,
             Name = request.JobName ?? $"{config.Name} - {now:yyyy-MM-dd HH:mm}",
             ConfigurationId = request.ConfigurationId,
             Status = initialStatus,
+            QueueId = queueId,
             CurrentEpoch = 0,
             TotalEpochs = config.MaxEpochs,
             CurrentAttempt = 1,
@@ -276,7 +259,8 @@ public sealed class TrainingService : ITrainingService
             JobId = jobId,
             Configuration = config,
             Dataset = dataset,
-            CancellationTokenSource = new CancellationTokenSource()
+            CancellationTokenSource = new CancellationTokenSource(),
+            QueueId = queueId
         };
 
         _activeJobs[jobId] = runtimeState;
@@ -371,6 +355,35 @@ public sealed class TrainingService : ITrainingService
         return true;
     }
 
+    public async Task<bool> DeleteTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default)
+    {
+        // Verify ownership
+        if (!await _userContext.OwnsResourceAsync(ResourceTypes.TrainingJob, jobId, cancellationToken))
+            throw new UnauthorizedAccessException($"Access denied to training job {jobId}");
+
+        // Cannot delete active jobs - must cancel first
+        if (_activeJobs.ContainsKey(jobId))
+            throw new InvalidOperationException("Cannot delete an active job. Cancel it first.");
+
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var entity = await db.TrainingJobs.FindAsync([jobId], cancellationToken);
+        if (entity is null)
+            return false;
+
+        // Don't allow deleting running jobs
+        if (entity.Status is TrainingJobStatus.Training or TrainingJobStatus.Preprocessing or TrainingJobStatus.Backtesting)
+            throw new InvalidOperationException("Cannot delete a running job. Cancel it first.");
+
+        // Delete checkpoint if exists
+        _checkpointManager.DeleteCheckpoint(jobId);
+
+        // Delete the job record
+        db.TrainingJobs.Remove(entity);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return true;
+    }
+
     public async Task<IReadOnlyList<TrainingJob>> GetJobsForConfigurationAsync(Guid configurationId, CancellationToken cancellationToken = default)
     {
         // Verify ownership of the configuration
@@ -394,24 +407,26 @@ public sealed class TrainingService : ITrainingService
         var cts = state.CancellationTokenSource;
         var jobId = state.JobId;
 
-        // Acquire semaphore to ensure only one training job runs at a time
-        // This prevents TorchSharp ExternalException errors from concurrent GPU access
-        await UpdateJobAsync(jobId, job => job with { Message = "Waiting for training slot..." });
-        
-        try
+        // Acquire queue slot
+        if (state.QueueId.HasValue)
         {
-            await _trainingSemaphore.WaitAsync(cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            await UpdateJobAsync(jobId, job => job with
+            await UpdateJobAsync(jobId, job => job with { Message = "Waiting for queue slot..." });
+            
+            try
             {
-                Status = TrainingJobStatus.Cancelled,
-                Message = "Training cancelled while waiting for slot",
-                CompletedAtUtc = DateTime.UtcNow
-            });
-            _activeJobs.TryRemove(jobId, out _);
-            return;
+                await _queueService.AcquireAsync(state.QueueId.Value, jobId, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                await UpdateJobAsync(jobId, job => job with
+                {
+                    Status = TrainingJobStatus.Cancelled,
+                    Message = "Training cancelled while waiting for queue",
+                    CompletedAtUtc = DateTime.UtcNow
+                });
+                _activeJobs.TryRemove(jobId, out _);
+                return;
+            }
         }
 
         try
@@ -429,6 +444,7 @@ public sealed class TrainingService : ITrainingService
             if (klines.Count == 0)
                 throw new InvalidOperationException($"Dataset contains no data. The dataset '{state.Dataset.Name}' ({state.Dataset.Symbol}, {state.Dataset.Interval}) has 0 records in the specified date range.");
 
+
             var minRequired = config.MaxLags + config.ForecastHorizon + 10;
             if (klines.Count < minRequired)
                 throw new InvalidOperationException($"Dataset has insufficient data ({klines.Count} records). Need at least {minRequired} records for MaxLags={config.MaxLags} and ForecastHorizon={config.ForecastHorizon}.");
@@ -440,6 +456,7 @@ public sealed class TrainingService : ITrainingService
             
             // Release klines reference immediately after feature extraction
             klines = null!;
+            
             
             await UpdateJobAsync(jobId, job => job with { Message = $"Splitting {allData.Samples.Count} samples into train/val/test..." });
 
@@ -695,11 +712,22 @@ public sealed class TrainingService : ITrainingService
         }
         finally
         {
-            // Release semaphore to allow next training job to run
-            _trainingSemaphore.Release();
+            // Release queue slot
+            ReleaseQueue(state);
             
             // Clean up runtime state when job completes
             _activeJobs.TryRemove(jobId, out _);
+        }
+    }
+
+    /// <summary>
+    /// Releases queue slot held by a job.
+    /// </summary>
+    private void ReleaseQueue(TrainingJobRuntimeState state)
+    {
+        if (state.QueueId.HasValue)
+        {
+            _queueService.Release(state.QueueId.Value, state.JobId);
         }
     }
 
@@ -716,6 +744,7 @@ public sealed class TrainingService : ITrainingService
             await db.SaveChangesAsync();
         }
     }
+
 
     // Optimized: Update only progress fields with single UPDATE statement (no SELECT)
     private async Task UpdateJobProgressAsync(Guid jobId, int currentEpoch, double trainingLoss, double validationLoss, double bestValidationLoss, int epochsSinceImprovement, string message)
@@ -799,6 +828,9 @@ public sealed class TrainingService : ITrainingService
         public int InitialRetryAttempt { get; init; } = 0;  // For resume: the attempt we're continuing
         public bool IsPaused { get; set; } = false;
         public bool ResumeFromCheckpoint { get; set; } = false;  // Set to false after first training completes
+        
+        // Resource queue ID (resolved at job start)
+        public Guid? QueueId { get; set; }
     }
 
     // Helper method to update job checkpoint status - uses ExecuteUpdateAsync (no SELECT)
@@ -917,7 +949,8 @@ public sealed class TrainingService : ITrainingService
             Configuration = config,
             Dataset = dataset,
             CancellationTokenSource = new CancellationTokenSource(),
-            ResumeFromCheckpoint = false
+            ResumeFromCheckpoint = false,
+            QueueId = entity.QueueId
         };
 
         _activeJobs[jobId] = runtimeState;
@@ -979,7 +1012,8 @@ public sealed class TrainingService : ITrainingService
             Dataset = dataset,
             CancellationTokenSource = new CancellationTokenSource(),
             ResumeFromCheckpoint = true,
-            InitialRetryAttempt = currentAttempt - 1  // -1 because it will be incremented at loop start
+            InitialRetryAttempt = currentAttempt - 1,  // -1 because it will be incremented at loop start
+            QueueId = entity.QueueId
         };
 
         _activeJobs[jobId] = runtimeState;

@@ -10,6 +10,9 @@ public sealed class TrainingJobEntity
     public required Guid ConfigurationId { get; set; }
     public required TrainingJobStatus Status { get; set; }
 
+    // Resource queue for this job
+    public Guid? QueueId { get; set; }
+
     // Progress tracking
     public int CurrentEpoch { get; set; }
     public int TotalEpochs { get; set; }
@@ -48,6 +51,7 @@ public sealed class TrainingJobEntity
         Name = Name,
         ConfigurationId = ConfigurationId,
         Status = Status,
+        QueueId = QueueId,
         CurrentEpoch = CurrentEpoch,
         TotalEpochs = TotalEpochs,
         TrainingLoss = TrainingLoss,
@@ -72,6 +76,7 @@ public sealed class TrainingJobEntity
         Name = job.Name,
         ConfigurationId = job.ConfigurationId,
         Status = job.Status,
+        QueueId = job.QueueId,
         CurrentEpoch = job.CurrentEpoch,
         TotalEpochs = job.TotalEpochs,
         TrainingLoss = job.TrainingLoss,

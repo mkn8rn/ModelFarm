@@ -23,6 +23,7 @@ public class ConfigurationsModel : PageModel
     [BindProperty]
     public ConfigurationType ConfigurationType { get; set; } = ConfigurationType.QuantStrategy;
 
+
     [BindProperty]
     public string ConfigName { get; set; } = "";
 
@@ -87,6 +88,10 @@ public class ConfigurationsModel : PageModel
 
     [BindProperty]
     public double LearningRateRetryScale { get; set; } = 0.5;
+
+    // Inference Settings
+    [BindProperty]
+    public bool UseGpuForInference { get; set; } = false;
 
     [BindProperty]
     public double? MinSharpeRatio { get; set; } = 1.0;
@@ -159,6 +164,7 @@ public class ConfigurationsModel : PageModel
                 ShuffleOnRetry = ShuffleOnRetry,
                 ScaleLearningRateOnRetry = ScaleLearningRateOnRetry,
                 LearningRateRetryScale = LearningRateRetryScale,
+                UseGpuForInference = UseGpuForInference,
                 PerformanceRequirements = new PerformanceRequirements
                 {
                     MinSharpeRatio = MinSharpeRatio,

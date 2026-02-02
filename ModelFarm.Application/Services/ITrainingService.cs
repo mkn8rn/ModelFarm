@@ -57,6 +57,11 @@ public interface ITrainingService
     Task<bool> CancelTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Deletes a training job record. Does not delete any trained model files.
+    /// </summary>
+    Task<bool> DeleteTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Pauses a running training job.
     /// </summary>
     Task<bool> PauseTrainingJobAsync(Guid jobId, CancellationToken cancellationToken = default);
@@ -138,6 +143,10 @@ public sealed record CreateTrainingConfigurationRequest
     public bool ScaleLearningRateOnRetry { get; init; } = false;
     public double LearningRateRetryScale { get; init; } = 0.5;
 
+
+    // Inference settings
+    public bool UseGpuForInference { get; init; } = false;
+
     // Performance requirements
     public required PerformanceRequirements PerformanceRequirements { get; init; }
 
@@ -179,6 +188,13 @@ public sealed record UpdateTrainingConfigurationRequest
     public bool? ShuffleOnRetry { get; init; }
     public bool? ScaleLearningRateOnRetry { get; init; }
     public double? LearningRateRetryScale { get; init; }
+
+    // Inference settings
+    public bool? UseGpuForInference { get; init; }
+
+    // Resource containers
+    public Guid? CpuContainerId { get; init; }
+    public Guid? GpuContainerId { get; init; }
 
     // Performance requirements
     public PerformanceRequirements? PerformanceRequirements { get; init; }

@@ -509,6 +509,7 @@ internal sealed class TorchTrainedModel : ITrainedModel
     private readonly Module<Tensor, Tensor> _model;
     private readonly ModelType _modelType;
     private readonly string[] _featureNames;
+    private readonly Device _inferenceDevice;
 
     public Guid ModelId { get; }
 
@@ -516,25 +517,39 @@ internal sealed class TorchTrainedModel : ITrainedModel
         Guid modelId,
         Module<Tensor, Tensor> model,
         ModelType modelType,
-        string[] featureNames)
+        string[] featureNames,
+        bool useGpuForInference = false)
     {
         ModelId = modelId;
         _model = model;
         _modelType = modelType;
         _featureNames = featureNames;
         
-        // Move model to CPU for stable inference during backtesting
-        _model.cpu();
+        // Determine inference device based on configuration and availability
+        if (useGpuForInference && torch.cuda.is_available())
+        {
+            _inferenceDevice = torch.CUDA;
+            _model.to(_inferenceDevice);
+            Console.WriteLine("[TorchTrainedModel] Using GPU for inference");
+        }
+        else
+        {
+            _inferenceDevice = torch.CPU;
+            _model.cpu();
+            Console.WriteLine("[TorchTrainedModel] Using CPU for inference");
+        }
+        
         _model.eval();
     }
 
     public float Predict(float[] features)
     {
         using var _ = torch.no_grad();
-        using var input = torch.tensor(features, dtype: ScalarType.Float32)
+        using var inputCpu = torch.tensor(features, dtype: ScalarType.Float32)
             .reshape(1, features.Length);
+        using var input = inputCpu.to(_inferenceDevice);
         using var output = _model.forward(input);
-        return output.item<float>();
+        return output.cpu().item<float>();
     }
 
     public float[] PredictBatch(IReadOnlyList<float[]> features)
@@ -553,12 +568,14 @@ internal sealed class TorchTrainedModel : ITrainedModel
                 Buffer.BlockCopy(features[i], 0, flatArray, i * featureCount * sizeof(float), featureCount * sizeof(float));
             }
 
-            using Tensor input = torch.tensor(flatArray.AsSpan(0, flatLength).ToArray(), dtype: ScalarType.Float32)
+            using Tensor inputCpu = torch.tensor(flatArray.AsSpan(0, flatLength).ToArray(), dtype: ScalarType.Float32)
                 .reshape(sampleCount, featureCount);
+            using Tensor input = inputCpu.to(_inferenceDevice);
             using Tensor output = _model.forward(input);
+            using Tensor outputCpu = output.cpu();
             
             float[] result = new float[sampleCount];
-            float[] outputData = output.data<float>().ToArray();
+            float[] outputData = outputCpu.data<float>().ToArray();
             Array.Copy(outputData, result, sampleCount);
             
             return result;

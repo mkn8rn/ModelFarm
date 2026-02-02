@@ -149,6 +149,15 @@ public sealed record TrainingConfiguration
     /// </summary>
     public double LearningRateRetryScale { get; init; } = 0.5;
 
+    // ==================== Inference Settings ====================
+
+    /// <summary>
+    /// If true, use GPU for model inference (predictions) when available.
+    /// Recommended for larger models (MLP, LSTM) with many predictions.
+    /// For small models like LinearRegression, CPU is often faster due to transfer overhead.
+    /// </summary>
+    public bool UseGpuForInference { get; init; } = false;
+
     // ==================== Performance Requirements ====================
 
     /// <summary>
